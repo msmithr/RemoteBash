@@ -45,18 +45,24 @@ int main(int argc, char *argv[]) {
 
 
 void handle_client(int connect_fd) {
+    /* initialize variables */
     const char *rembash = "<rembash>\n";
     const char *error = "<error>\n";
     const char *ok = "<ok>\n";
-
     char buff[512];
     int nread;
+    
+    /* perform protocol */
 
-    write(connect_fd, rembash, strlen(rembash));
+    // write <rembash>\n
+    if (write(connect_fd, rembash, strlen(rembash)) == -1) {
+        fprintf(stderr, "remcpd: %s", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
 
+    // read <SECRET>\n 
     nread = read(connect_fd, buff, 512);
     buff[nread] = '\0';
-    printf("%s", buff);
 
     write(connect_fd, ok, strlen(ok));
 

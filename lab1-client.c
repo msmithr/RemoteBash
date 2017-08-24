@@ -14,36 +14,66 @@
 int make_connection(char *ip);
 
 int main(int argc, char *argv[]) {
+
+    /* handle arguments */
     if (argc != 2) {
         fprintf(stderr, "usage: ./rembash <ip address>\n");
         return EXIT_FAILURE;
     }
 
     char *ip = argv[1];
-    int sockfd;
 
+    /* connect to the server */
+    int sockfd;
     if ((sockfd = make_connection(ip)) == -1) {
         fprintf(stderr, "rembash: %s", strerror(errno));
         return EXIT_FAILURE;
     }
 
+    /* initialize variables */
+    char buff[512];
     char secret[512];
+    int nread;
     sprintf(secret, "<%s>\n", SECRET);
 
-    char buff[512];
-    int nread;
+    /* perform protocol */
 
-    nread = read(sockfd, buff, 512);
+    // read <rembash>\n
+    if ((nread = read(sockfd, buff, 512)) == -1) {
+        fprintf(stderr, "rembash: %s", strerror(errno));
+        return EXIT_FAILURE;
+    }
     buff[nread] = '\0';
-    printf("%s", buff);
 
+    if (strcmp(buff, "<rembash>\n") != 0) {
+        fprintf(stderr, "rembash: Invalid protocol from server");
+        return EXIT_FAILURE;
+    }
 
-    write(sockfd, secret, strlen(secret));
+    // write <SECRET>\n
+    if (write(sockfd, secret, strlen(secret)) == -1) {
+        fprintf(stderr, "rembash: %s", strerror(errno));
+        return EXIT_FAILURE;
+    }
 
-    nread = read(sockfd, buff, 512);
+    // read <ok>\n  or <error>\n
+    if ((nread = read(sockfd, buff, 512)) == -1) {
+        fprintf(stderr, "rembash: %s", strerror(errno));
+        return EXIT_FAILURE;
+    }
     buff[nread] = '\0';
-    printf("%s", buff);
 
+    if (strcmp(buff, "<error>\n") == 0) {
+        fprintf(stderr, "rembash: Invalid secret");
+        return EXIT_FAILURE;
+    }
+
+    if (strcmp(buff, "<ok>\n") != 0) {
+        fprintf(stderr, "rembash: Invalid protocol from server");
+        return EXIT_FAILURE;
+    }
+
+    buff[nread] = '\0';
     
 }
 
