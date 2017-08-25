@@ -6,6 +6,8 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
+#include "readline.c"
+
 #define PORT 7656
 #define SECRET "testing123"
 
@@ -46,7 +48,7 @@ int main(int argc, char *argv[]) {
     buff[nread] = '\0';
 
     if (strcmp(buff, "<rembash>\n") != 0) {
-        fprintf(stderr, "rembash: Invalid protocol from server");
+        fprintf(stderr, "rembash: Invalid protocol from server\n");
         return EXIT_FAILURE;
     }
 
@@ -64,18 +66,31 @@ int main(int argc, char *argv[]) {
     buff[nread] = '\0';
 
     if (strcmp(buff, "<error>\n") == 0) {
-        fprintf(stderr, "rembash: Invalid secret");
+        fprintf(stderr, "rembash: Invalid secret\n");
         return EXIT_FAILURE;
     }
 
     if (strcmp(buff, "<ok>\n") != 0) {
-        fprintf(stderr, "rembash: Invalid protocol from server");
+        fprintf(stderr, "rembash: Invalid protocol from server\n");
         return EXIT_FAILURE;
     }
 
-    buff[nread] = '\0';
-    
-}
+    char input[512];
+    switch (fork()) {
+        case 0:
+            while(1) {
+                fgets(input, 512, stdin);
+                write(sockfd, input, strlen(input));
+            }
+    }
+
+
+    // read loop
+    char *output;
+    while ((output = readline(sockfd)) != NULL) {
+        printf("%s\n", output);
+    }
+} // end main()
 
 int make_connection(char *ip) {
     int sockfd;

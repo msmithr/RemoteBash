@@ -1,3 +1,5 @@
+// rembashd
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,25 +22,36 @@ int main(int argc, char *argv[]) {
     int sockfd = setup_socket();
     int connect_fd;
 
+    if (sockfd == -1) {
+        fprintf(stderr, "rembashd: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
 
+    // children auto collected
     signal(SIGCHLD, SIG_IGN);
 
     while(1) {
         connect_fd = accept(sockfd, (struct sockaddr *) NULL, NULL);
+        
+        if (connect_fd == -1) {
+            fprintf(stderr, "rembashd: %s\n", strerror(errno));
+            exit(EXIT_FAILURE);
+        }
 
         switch (fork()) {
             case -1:
                 fprintf(stderr, "rembashd: %s\n", strerror(errno));
-                return EXIT_FAILURE;
+                exit(EXIT_FAILURE);
 
             case 0: // in child
                 handle_client(connect_fd);
-                return EXIT_SUCCESS;
-            
-            close(connect_fd);
+                exit(EXIT_SUCCESS);
 
         } // end switch/case
+
+        // in parent, close connection
         close(connect_fd);
+
     } // end while
 
 } // end main()
@@ -49,8 +62,11 @@ void handle_client(int connect_fd) {
     const char *rembash = "<rembash>\n";
     const char *error = "<error>\n";
     const char *ok = "<ok>\n";
+    char secret[512];
     char buff[512];
     int nread;
+    
+    sprintf(secret, "<%s>\n", SECRET);
     
     /* perform protocol */
 
@@ -61,15 +77,34 @@ void handle_client(int connect_fd) {
     }
 
     // read <SECRET>\n 
-    nread = read(connect_fd, buff, 512);
+    if ((nread = read(connect_fd, buff, 512)) == -1) {
+        fprintf(stderr, "remcpd: %s", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
     buff[nread] = '\0';
+   
+    if (strcmp(buff, secret) != 0) {
+        // write <error>\n
+        if (write(connect_fd, error, strlen(error)) == -1) {
+            fprintf(stderr, "remcpd: %s", strerror(errno));
+        }
+        exit(EXIT_FAILURE);
+    }
 
-    write(connect_fd, ok, strlen(ok));
+    // write <ok>\n
+    if (write(connect_fd, ok, strlen(ok)) == -1) {
+        fprintf(stderr, "remcpd: %s", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
 
+    // redirections
+    dup2(connect_fd, 0);
+    dup2(connect_fd, 1);
+    dup2(connect_fd, 2);
 
+    // exec bash
+    execlp("bash", "bash", "--noediting", "-i", NULL);
 }
-
-
 
 int setup_socket() {
 
