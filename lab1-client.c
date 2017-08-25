@@ -1,3 +1,5 @@
+// rembash
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -5,78 +7,93 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #include "readline.c"
 
 #define PORT 7656
 #define SECRET "testing123"
 
-// connects to a server
-// returns socket file descriptor or -1 on failure
-int make_connection(char *ip);
-
 int main(int argc, char *argv[]) {
 
     /* handle arguments */
     if (argc != 2) {
         fprintf(stderr, "usage: ./rembash <ip address>\n");
-        return EXIT_FAILURE;
+        exit(EXIT_FAILURE);
     }
 
     char *ip = argv[1];
 
     /* connect to the server */
     int sockfd;
-    if ((sockfd = make_connection(ip)) == -1) {
-        fprintf(stderr, "rembash: %s", strerror(errno));
-        return EXIT_FAILURE;
+
+    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        exit(EXIT_FAILURE);
+    }
+
+    struct sockaddr_in servaddr;
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(PORT);
+    if (inet_aton(ip, &servaddr.sin_addr) == 0) {
+        exit(EXIT_FAILURE);
+    }
+
+    if (connect(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr)) == -1) {
+        exit(EXIT_FAILURE);
     }
 
     /* initialize variables */
-    char buff[512];
     char secret[512];
-    int nread;
     sprintf(secret, "<%s>\n", SECRET);
-
+    
     /* perform protocol */
+    char *line;
 
     // read <rembash>\n
-    if ((nread = read(sockfd, buff, 512)) == -1) {
+    if ((line = readline(sockfd)) == NULL) {
         fprintf(stderr, "rembash: %s", strerror(errno));
-        return EXIT_FAILURE;
+        exit(EXIT_FAILURE);
     }
-    buff[nread] = '\0';
 
-    if (strcmp(buff, "<rembash>\n") != 0) {
+    if (strcmp(line, "<rembash>") != 0) {
         fprintf(stderr, "rembash: Invalid protocol from server\n");
-        return EXIT_FAILURE;
+        exit(EXIT_FAILURE);
     }
 
     // write <SECRET>\n
     if (write(sockfd, secret, strlen(secret)) == -1) {
         fprintf(stderr, "rembash: %s", strerror(errno));
-        return EXIT_FAILURE;
+        exit(EXIT_FAILURE);
     }
 
-    // read <ok>\n  or <error>\n
-    if ((nread = read(sockfd, buff, 512)) == -1) {
+    // read <ok>\n or <error>\n
+    if ((line = readline(sockfd)) == NULL) {
         fprintf(stderr, "rembash: %s", strerror(errno));
-        return EXIT_FAILURE;
+        exit(EXIT_FAILURE);
     }
-    buff[nread] = '\0';
 
-    if (strcmp(buff, "<error>\n") == 0) {
+    if (strcmp(line, "<error>") == 0) {
         fprintf(stderr, "rembash: Invalid secret\n");
-        return EXIT_FAILURE;
+        exit(EXIT_FAILURE);
     }
 
-    if (strcmp(buff, "<ok>\n") != 0) {
+    if (strcmp(line, "<ok>") != 0) {
         fprintf(stderr, "rembash: Invalid protocol from server\n");
-        return EXIT_FAILURE;
+        exit(EXIT_FAILURE);
     }
 
+    /* fork off a subprocess to infinitely loop,
+     * read lines from stdin and write them to the socket */
     char input[512];
-    switch (fork()) {
+    pid_t pid;
+
+    switch (pid = fork()) {
+        case -1:
+            fprintf(stderr, "rembash: %s", strerror(errno));
+            exit(EXIT_FAILURE);
+            
         case 0:
             while(1) {
                 fgets(input, 512, stdin);
@@ -84,31 +101,17 @@ int main(int argc, char *argv[]) {
             }
     }
 
-
-    // read loop
+    /* infinitely loop, reading lines from socket and writing
+     * until EOF */
     char *output;
     while ((output = readline(sockfd)) != NULL) {
         printf("%s\n", output);
     }
+    
+    // kill and collect the subprocess
+    kill(pid, 15); // SIGTERM to subprocess
+    wait(NULL); // TODO: error check here?
+
+    exit(EXIT_SUCCESS);
 } // end main()
 
-int make_connection(char *ip) {
-    int sockfd;
-
-    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-        return -1;
-    }
-
-    struct sockaddr_in servaddr;
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_port = htons(PORT);
-    if (inet_aton(ip, &servaddr.sin_addr) == 0) {
-        return -1;
-    }
-
-    if (connect(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr)) == -1) {
-        return -1;
-    }
-
-    return sockfd;
-}
