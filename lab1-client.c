@@ -113,5 +113,6 @@ int main(int argc, char *argv[]) {
     wait(NULL); // TODO: error check here?
 
     exit(EXIT_SUCCESS);
+
 } // end main()
 
