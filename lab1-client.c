@@ -13,8 +13,8 @@
 
 #include "readline.c"
 
-#define PORT 7656
-#define SECRET "testing123"
+#define PORT 4070
+#define SECRET "cs407rembash"
 
 int main(int argc, char *argv[]) {
 

@@ -11,8 +11,8 @@
 
 #include "readline.c"
 
-#define PORT 7656
-#define SECRET "testing123"
+#define PORT 4070
+#define SECRET "cs407rembash"
 
 void handle_client(int connect_fd);
 
@@ -22,7 +22,7 @@ int main(int argc, char *argv[]) {
 
     /* set up the socket */
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-        return -1;
+        exit(EXIT_FAILURE);
     }
    
     // immediate reuse of port for testing
@@ -35,11 +35,11 @@ int main(int argc, char *argv[]) {
     servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if ((bind(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr))) == -1) {
-        return -1;
+        exit(EXIT_FAILURE);
     }
     
     if ((listen(sockfd, 5)) == -1) {
-        return -1;
+        exit(EXIT_FAILURE);
     }
     
     // children auto collected
