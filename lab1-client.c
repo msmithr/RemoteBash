@@ -30,6 +30,7 @@ int main(int argc, char *argv[]) {
     int sockfd;
 
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        fprintf(stderr, "rembash: %s", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
@@ -37,11 +38,13 @@ int main(int argc, char *argv[]) {
     servaddr.sin_family = AF_INET;
     servaddr.sin_port = htons(PORT);
     if (inet_aton(ip, &servaddr.sin_addr) == 0) {
+        fprintf(stderr, "rembash: %s", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
     if (connect(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr)) == -1) {
         exit(EXIT_FAILURE);
+        fprintf(stderr, "rembash: %s", strerror(errno));
     }
 
     /* initialize variables */
