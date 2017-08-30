@@ -106,9 +106,12 @@ int main(int argc, char *argv[]) {
 
     /* infinitely loop, reading lines from socket and writing
      * until EOF */
-    char *output;
-    while ((output = readline(sockfd)) != NULL) {
-        printf("%s\n", output);
+    char buff[512];
+    int nread;
+    while ((nread = read(sockfd, buff, 512)) != 0) {
+        buff[nread] = '\0';
+        printf("%s", buff);
+        fflush(stdout);
     }
     
     // kill and collect the subprocess
