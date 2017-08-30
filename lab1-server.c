@@ -1,4 +1,12 @@
-// rembashd
+// CS 407 Lab 01
+//
+// Client/server application allowing user to run bash
+// commands on a remote machine, similar to SSH or TELNET
+//
+// Server usage: ./rembashd
+//
+// author: Michael Smith
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,12 +82,12 @@ int main(int argc, char *argv[]) {
 
 
 void handle_client(int connect_fd) {
+
     /* initialize variables */
     const char *rembash = "<rembash>\n";
     const char *error = "<error>\n";
     const char *ok = "<ok>\n";
-    char secret[512];
-    
+    char secret[strlen(SECRET) + 4];
     sprintf(secret, "<%s>", SECRET);
     
     /* perform protocol */

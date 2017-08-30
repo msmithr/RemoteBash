@@ -1,4 +1,11 @@
-// rembash
+// CS407 Lab 01
+// 
+// Client/server application allowing user to run bash
+// commands on a remote machine, similar to SSH or Telnet
+//
+// Client usage: ./rembash <ip address>
+//
+// author: Michael Smith
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,7 +55,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* initialize variables */
-    char secret[512];
+    char secret[strlen(SECRET) + 4];
     sprintf(secret, "<%s>\n", SECRET);
     
     /* perform protocol */
@@ -100,15 +107,21 @@ int main(int argc, char *argv[]) {
         case 0:
             while(1) {
                 fgets(input, 512, stdin);
-                write(sockfd, input, strlen(input));
+
+                if (write(sockfd, input, strlen(input)) == -1) {
+                    fprintf(stderr, "rembash: %s", strerror(errno));
+                    kill(getppid(), 15); // SIGTERM to parent
+                    exit(EXIT_FAILURE);
+                }
+
             }
     }
 
     /* infinitely loop, reading lines from socket and writing
      * until EOF */
-    char buff[512];
+    char buff[4096];
     int nread;
-    while ((nread = read(sockfd, buff, 512)) != 0) {
+    while ((nread = read(sockfd, buff, 4096)) != 0) {
         buff[nread] = '\0';
         printf("%s", buff);
         fflush(stdout);
@@ -116,7 +129,7 @@ int main(int argc, char *argv[]) {
     
     // kill and collect the subprocess
     kill(pid, 15); // SIGTERM to subprocess
-    wait(NULL); // TODO: error check here?
+    wait(NULL); 
 
     exit(EXIT_SUCCESS);
 
