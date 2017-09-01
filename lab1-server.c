@@ -17,10 +17,8 @@
 #include <sys/socket.h>
 #include <signal.h>
 
-#include "readline.c"
-
 #define PORT 4070
-#define SECRET "cs407rembash"
+#define SECRET "<cs407rembash>\n"
 
 void handle_client(int connect_fd);
 
@@ -87,11 +85,10 @@ void handle_client(int connect_fd) {
     const char *rembash = "<rembash>\n";
     const char *error = "<error>\n";
     const char *ok = "<ok>\n";
-    char secret[strlen(SECRET) + 4];
-    sprintf(secret, "<%s>", SECRET);
     
     /* perform protocol */
-    char *line;
+    char buff[4096];
+    int nread;
 
     // write <rembash>\n
     if (write(connect_fd, rembash, strlen(rembash)) == -1) {
@@ -100,12 +97,13 @@ void handle_client(int connect_fd) {
     }
 
     // read <SECRET>\n 
-    if ((line = readline(connect_fd)) == NULL) {
-        fprintf(stderr, "rembash: %s", strerror(errno));
+    if ((nread = read(connect_fd, buff, 4096)) == -1) {
+        fprintf(stderr, "remcpd: %s", strerror(errno));
         exit(EXIT_FAILURE);
     }
+    buff[nread] = '\0';
 
-    if (strcmp(line, secret) != 0) {
+    if (strcmp(buff, SECRET) != 0) {
         // write <error>\n
         if (write(connect_fd, error, strlen(error)) == -1) {
             fprintf(stderr, "remcpd: %s", strerror(errno));

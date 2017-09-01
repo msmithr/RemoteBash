@@ -18,10 +18,8 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-#include "readline.c"
-
 #define PORT 4070
-#define SECRET "cs407rembash"
+#define SECRET "<cs407rembash>\n"
 
 int main(int argc, char *argv[]) {
 
@@ -54,42 +52,41 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "rembash: %s", strerror(errno));
     }
 
-    /* initialize variables */
-    char secret[strlen(SECRET) + 4];
-    sprintf(secret, "<%s>\n", SECRET);
-    
     /* perform protocol */
-    char *line;
+    char buff[4096];
+    int nread;
 
     // read <rembash>\n
-    if ((line = readline(sockfd)) == NULL) {
+    if ((nread = read(sockfd, buff, 4096)) == -1) {
         fprintf(stderr, "rembash: %s", strerror(errno));
         exit(EXIT_FAILURE);
     }
+    buff[nread] = '\0';
 
-    if (strcmp(line, "<rembash>") != 0) {
+    if (strcmp(buff, "<rembash>\n") != 0) {
         fprintf(stderr, "rembash: Invalid protocol from server\n");
         exit(EXIT_FAILURE);
     }
 
     // write <SECRET>\n
-    if (write(sockfd, secret, strlen(secret)) == -1) {
+    if (write(sockfd, SECRET, strlen(SECRET)) == -1) {
         fprintf(stderr, "rembash: %s", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
     // read <ok>\n or <error>\n
-    if ((line = readline(sockfd)) == NULL) {
+    if ((nread = read(sockfd, buff, 4096)) == -1) {
         fprintf(stderr, "rembash: %s", strerror(errno));
         exit(EXIT_FAILURE);
     }
+    buff[nread] = '\0';
 
-    if (strcmp(line, "<error>") == 0) {
+    if (strcmp(buff, "<error>\n") == 0) {
         fprintf(stderr, "rembash: Invalid secret\n");
         exit(EXIT_FAILURE);
     }
 
-    if (strcmp(line, "<ok>") != 0) {
+    if (strcmp(buff, "<ok>\n") != 0) {
         fprintf(stderr, "rembash: Invalid protocol from server\n");
         exit(EXIT_FAILURE);
     }
@@ -119,8 +116,6 @@ int main(int argc, char *argv[]) {
 
     /* infinitely loop, reading lines from socket and writing
      * until EOF */
-    char buff[4096];
-    int nread;
     while ((nread = read(sockfd, buff, 4096)) != 0) {
         buff[nread] = '\0';
         printf("%s", buff);
