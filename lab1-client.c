@@ -24,6 +24,9 @@
 #define SECRET "<cs407rembash>\n"
 
 int main(int argc, char *argv[]) {
+
+    dtrace("Client started: PID: %d, PPID: %d\n", getpid(), getppid());
+
     /* handle arguments */
     if (argc != 2) {
         fprintf(stderr, "usage: ./rembash <ip address>\n");
@@ -53,8 +56,11 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "rembash: %s", strerror(errno));
     }
 
+    dtrace("Connected to server; fd: %d\n", sockfd);
+
     /* perform protocol */
     char buff[4096];
+
     int nread;
 
     // read <rembash>\n
@@ -63,6 +69,8 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
     buff[nread] = '\0';
+
+    dtrace("Read %.*s\\n from server\n", (int) strlen(buff)-1, buff);
 
     if (strcmp(buff, "<rembash>\n") != 0) {
         fprintf(stderr, "rembash: Invalid protocol from server\n");
@@ -75,12 +83,16 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    dtrace("Wrote %.*s\\n to server\n", (int) strlen(SECRET)-1, SECRET);
+
     // read <ok>\n or <error>\n
     if ((nread = read(sockfd, buff, 4096)) == -1) {
         fprintf(stderr, "rembash: %s", strerror(errno));
         exit(EXIT_FAILURE);
     }
     buff[nread] = '\0';
+
+    dtrace("Read %.*s\\n from server\n", (int) strlen(buff)-1, buff);
 
     if (strcmp(buff, "<error>\n") == 0) {
         fprintf(stderr, "rembash: Invalid secret\n");
@@ -102,7 +114,8 @@ int main(int argc, char *argv[]) {
             fprintf(stderr, "rembash: %s", strerror(errno));
             exit(EXIT_FAILURE);
             
-        case 0:
+        case 0: // in child process
+            dtrace("Subprocess started: PID: %d, PPID: %d\n", getpid(), getppid());
             while(1) {
                 fgets(input, 512, stdin);
 
@@ -110,10 +123,11 @@ int main(int argc, char *argv[]) {
                     fprintf(stderr, "rembash: %s", strerror(errno));
                     kill(getppid(), 15); // SIGTERM to parent
                     exit(EXIT_FAILURE);
-                }
+                } // end if
 
-            }
-    }
+            } // end while
+
+    } // end switch/case
 
     /* infinitely loop, reading lines from socket and writing
      * until EOF */
@@ -121,7 +135,7 @@ int main(int argc, char *argv[]) {
         buff[nread] = '\0';
         printf("%s", buff);
         fflush(stdout);
-    }
+    } // end while
     
     // kill and collect the subprocess
     kill(pid, 15); // SIGTERM to subprocess

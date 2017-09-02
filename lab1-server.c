@@ -17,12 +17,17 @@
 #include <sys/socket.h>
 #include <signal.h>
 
+#include "dtrace.h"
+
 #define PORT 4070
 #define SECRET "<cs407rembash>\n"
 
 void handle_client(int connect_fd);
 
 int main(int argc, char *argv[]) {
+
+    dtrace("Server started: PID: %d, PPID: %d\n", getpid(), getppid());    
+
     int sockfd;
     int connect_fd;
 
