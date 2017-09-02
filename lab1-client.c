@@ -18,11 +18,12 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#include "dtrace.h"
+
 #define PORT 4070
 #define SECRET "<cs407rembash>\n"
 
 int main(int argc, char *argv[]) {
-
     /* handle arguments */
     if (argc != 2) {
         fprintf(stderr, "usage: ./rembash <ip address>\n");
