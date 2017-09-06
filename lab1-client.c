@@ -18,14 +18,21 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-#include "dtrace.h"
-
 #define PORT 4070
-#define SECRET "<cs407rembash>\n"
+#define SECRET "<cs407rembash>\n" // shared secret of the form <SECRET>\n
+
+// function to be called by the child process
+// continuously pulls text from the local terminal and writes it to the fd
+void write_loop(int fd);
+
+// function to create a connection to a tcp server
+// returns the socket file descriptor,
+// -1 on most failures,
+// and -2 if the given ip address is invalid (because inet_aton doesn't set errno)
+int connect_server(char *ip, int port);
+
 
 int main(int argc, char *argv[]) {
-
-    DTRACE("Client started: PID: %d, PPID: %d\n", getpid(), getppid());
 
     /* handle arguments */
     if (argc != 2) {
@@ -38,28 +45,14 @@ int main(int argc, char *argv[]) {
     /* connect to the server */
     int sockfd;
 
-    // create the socket
-    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-        fprintf(stderr, "rembash: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-    
-    // set up sockaddir_in struct
-    struct sockaddr_in servaddr;
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_port = htons(PORT);
-    if (inet_aton(ip, &servaddr.sin_addr) == 0) {
+    switch (sockfd = connect_server(ip, PORT)) {
+    case -2:
         fprintf(stderr, "rembash: invalid ip address: %s\n", ip);
         exit(EXIT_FAILURE);
-    }
-
-    // connect to server
-    if (connect(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr)) == -1) {
+    case -1:
         fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
-    }
-
-    DTRACE("Connected to server; fd: %d\n", sockfd);
+    } // end switch/case
 
     /* perform protocol */
     char buff[4096];
@@ -72,8 +65,6 @@ int main(int argc, char *argv[]) {
     }
     buff[nread] = '\0';
 
-    DTRACE("Read %.*s\\n from server\n", (int) strlen(buff)-1, buff);
-
     if (strcmp(buff, "<rembash>\n") != 0) {
         fprintf(stderr, "rembash: Invalid protocol from server\n");
         exit(EXIT_FAILURE);
@@ -85,16 +76,12 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    DTRACE("Wrote %.*s\\n to server\n", (int) strlen(SECRET)-1, SECRET);
-
     // read <ok>\n or <error>\n
     if ((nread = read(sockfd, buff, 4096)) == -1) {
         fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     buff[nread] = '\0';
-
-    DTRACE("Read %.*s\\n from server\n", (int) strlen(buff)-1, buff);
 
     if (strcmp(buff, "<error>\n") == 0) {
         fprintf(stderr, "rembash: Invalid secret\n");
@@ -108,31 +95,21 @@ int main(int argc, char *argv[]) {
 
     /* fork off a subprocess to infinitely loop,
      * read lines from stdin and write them to the socket */
-    char input[512];
     pid_t pid;
 
     switch (pid = fork()) {
-        case -1:
-            fprintf(stderr, "rembash: %s\n", strerror(errno));
-            exit(EXIT_FAILURE);
-            
-        case 0: // in child process
-            DTRACE("Subprocess started: PID: %d, PPID: %d\n", getpid(), getppid());
-            while(1) {
-                fgets(input, 512, stdin);
-
-                if (write(sockfd, input, strlen(input)) == -1) {
-                    fprintf(stderr, "rembash: %s\n", strerror(errno));
-                    kill(getppid(), 15); // SIGTERM to parent
-                    exit(EXIT_FAILURE);
-                } // end if
-
-            } // end while
+    case -1:
+        fprintf(stderr, "rembash: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+        
+    case 0: // in child process
+        write_loop(sockfd);
+        exit(EXIT_FAILURE);
 
     } // end switch/case
 
-    /* infinitely loop, reading lines from socket and writing
-     * until EOF */
+    // infinitely loop, reading lines from socket and writing
+    // until EOF 
     while ((nread = read(sockfd, buff, 4096)) != 0) {
         buff[nread] = '\0';
         printf("%s", buff);
@@ -147,3 +124,48 @@ int main(int argc, char *argv[]) {
 
 } // end main()
 
+
+// function to be called by the child process
+// continuously pulls text from the local terminal and writes it to the fd
+void write_loop(int fd) {
+    char input[512];
+
+    while(1) {
+        fgets(input, 512, stdin);
+
+        if (write(fd, input, strlen(input)) == -1) {
+            fprintf(stderr, "rembash: %s\n", strerror(errno));
+            kill(getppid(), 15); // kill the parent
+            exit(EXIT_FAILURE);
+        } // end if
+    } // end while()    
+
+} // end write_loop()
+
+// function to create a connection to a tcp server
+// returns the socket file descriptor,
+// -1 on most failures,
+// and -2 if the given ip address is invalid (because inet_aton doesn't set errno)
+int connect_server(char *ip, int port) {
+    int sockfd;
+
+    // create socket
+    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        return -1;
+    }
+    
+    // set up sockaddr_in struct
+    struct sockaddr_in servaddr;
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(port);
+    if (inet_aton(ip, &servaddr.sin_addr) == 0) {
+        return -2;
+    }
+    
+    // connect
+    if (connect(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr)) == -1) {
+        return -1;    
+    }
+
+    return sockfd;
+}

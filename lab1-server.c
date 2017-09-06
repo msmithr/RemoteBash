@@ -7,7 +7,6 @@
 //
 // author: Michael Smith
 
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,48 +16,29 @@
 #include <sys/socket.h>
 #include <signal.h>
 
-#include "dtrace.h"
-
 #define PORT 4070
 #define SECRET "<cs407rembash>\n"
 
+// function to be called be the child processes
+// handles each client given the file descriptor 
+// performs protocol, redirects stdin, stdout, and stderr, and exec's into bash
 void handle_client(int connect_fd);
+
+// function to create and set up a tcp server socket
+// returns the socket file descriptor,
+// or -1 on failure
+int setup_server_socket(int port);
 
 int main(int argc, char *argv[]) {
 
-    DTRACE("Server started: PID: %d, PPID: %d\n", getpid(), getppid());    
-
-    int sockfd;
     int connect_fd;
+    int sockfd;
 
-    /* set up the socket */
-    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+    if ((sockfd = setup_server_socket(PORT)) == -1) {
         fprintf(stderr, "rembashd: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
-   
-    // immediate reuse of port for testing
-    int i = 1;
-    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i));
 
-    // set up sockaddr_in struct
-    struct sockaddr_in servaddr;
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_port = htons(PORT);
-    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    
-    // bind the socket
-    if ((bind(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr))) == -1) {
-        fprintf(stderr, "rembashd: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-   
-    // listen
-    if ((listen(sockfd, 5)) == -1) {
-        fprintf(stderr, "rembashd: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-    
     // children auto collected
     signal(SIGCHLD, SIG_IGN);
 
@@ -67,23 +47,21 @@ int main(int argc, char *argv[]) {
         connect_fd = accept(sockfd, (struct sockaddr *) NULL, NULL);
         
         if (connect_fd == -1) {
-            DTRACE(stderr, "rembashd: %s\n", strerror(errno));
             continue;
         }
 
         switch (fork()) {
-            case -1: // error
-                DTRACE(stderr, "rembashd: %s\n", strerror(errno));
-                break;
+        case -1: // error
+            break;
 
-            case 0: // in child
-                close(sockfd); // close server socket in child
-                handle_client(connect_fd);
-                exit(EXIT_SUCCESS);
-            
-            default: // in parent
-                close(connect_fd);
-                break;
+        case 0: // in child
+            close(sockfd); // close server socket in child
+            handle_client(connect_fd);
+            exit(EXIT_SUCCESS);
+        
+        default: // in parent
+            close(connect_fd); // close connection in parent
+            break;
 
         } // end switch/case
 
@@ -92,6 +70,9 @@ int main(int argc, char *argv[]) {
 } // end main()
 
 
+// function to be called be the child processes
+// handles each client given the file descriptor 
+// performs protocol, redirects stdin, stdout, and stderr, and exec's into bash
 void handle_client(int connect_fd) {
 
     /* initialize variables */
@@ -144,3 +125,36 @@ void handle_client(int connect_fd) {
     execlp("bash", "bash", "--noediting", "-i", NULL);
 }
 
+// function to create and set up a server socket
+// returns the socket file descriptor,
+// or -1 on failure
+int setup_server_socket(int port) {
+    int sockfd;
+
+    // create the socket
+    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        return -1;
+    }
+
+    // immediate reuse of port for testing
+    int i = 1;
+    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i));
+
+    struct sockaddr_in servaddr;
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(port);
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    // bind the socket
+    if ((bind(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr))) == -1) {
+        return -1;
+    }
+
+    // set the socket to listen
+    if ((listen(sockfd, 5)) == -1) {
+        return -1;
+    }
+
+    return sockfd;
+
+} // end setup_server_socket()
