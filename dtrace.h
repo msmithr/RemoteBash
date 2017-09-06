@@ -1,5 +1,5 @@
 #ifdef DEBUG
-    #define dtrace(args ...) fprintf(stderr, args)
+    #define DTRACE(args ...) fprintf(stderr, args)
 #else
-    #define dtrace(args ...)
+    #define DTRACE(args ...)
 #endif

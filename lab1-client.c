@@ -25,7 +25,7 @@
 
 int main(int argc, char *argv[]) {
 
-    dtrace("Client started: PID: %d, PPID: %d\n", getpid(), getppid());
+    DTRACE("Client started: PID: %d, PPID: %d\n", getpid(), getppid());
 
     /* handle arguments */
     if (argc != 2) {
@@ -38,39 +38,41 @@ int main(int argc, char *argv[]) {
     /* connect to the server */
     int sockfd;
 
+    // create the socket
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-        fprintf(stderr, "rembash: %s", strerror(errno));
+        fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
-
+    
+    // set up sockaddir_in struct
     struct sockaddr_in servaddr;
     servaddr.sin_family = AF_INET;
     servaddr.sin_port = htons(PORT);
     if (inet_aton(ip, &servaddr.sin_addr) == 0) {
-        fprintf(stderr, "rembash: %s", strerror(errno));
+        fprintf(stderr, "rembash: invalid ip address: %s\n", ip);
         exit(EXIT_FAILURE);
     }
 
+    // connect to server
     if (connect(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr)) == -1) {
+        fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
-        fprintf(stderr, "rembash: %s", strerror(errno));
     }
 
-    dtrace("Connected to server; fd: %d\n", sockfd);
+    DTRACE("Connected to server; fd: %d\n", sockfd);
 
     /* perform protocol */
     char buff[4096];
-
     int nread;
 
     // read <rembash>\n
     if ((nread = read(sockfd, buff, 4096)) == -1) {
-        fprintf(stderr, "rembash: %s", strerror(errno));
+        fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     buff[nread] = '\0';
 
-    dtrace("Read %.*s\\n from server\n", (int) strlen(buff)-1, buff);
+    DTRACE("Read %.*s\\n from server\n", (int) strlen(buff)-1, buff);
 
     if (strcmp(buff, "<rembash>\n") != 0) {
         fprintf(stderr, "rembash: Invalid protocol from server\n");
@@ -79,20 +81,20 @@ int main(int argc, char *argv[]) {
 
     // write <SECRET>\n
     if (write(sockfd, SECRET, strlen(SECRET)) == -1) {
-        fprintf(stderr, "rembash: %s", strerror(errno));
+        fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
-    dtrace("Wrote %.*s\\n to server\n", (int) strlen(SECRET)-1, SECRET);
+    DTRACE("Wrote %.*s\\n to server\n", (int) strlen(SECRET)-1, SECRET);
 
     // read <ok>\n or <error>\n
     if ((nread = read(sockfd, buff, 4096)) == -1) {
-        fprintf(stderr, "rembash: %s", strerror(errno));
+        fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     buff[nread] = '\0';
 
-    dtrace("Read %.*s\\n from server\n", (int) strlen(buff)-1, buff);
+    DTRACE("Read %.*s\\n from server\n", (int) strlen(buff)-1, buff);
 
     if (strcmp(buff, "<error>\n") == 0) {
         fprintf(stderr, "rembash: Invalid secret\n");
@@ -111,16 +113,16 @@ int main(int argc, char *argv[]) {
 
     switch (pid = fork()) {
         case -1:
-            fprintf(stderr, "rembash: %s", strerror(errno));
+            fprintf(stderr, "rembash: %s\n", strerror(errno));
             exit(EXIT_FAILURE);
             
         case 0: // in child process
-            dtrace("Subprocess started: PID: %d, PPID: %d\n", getpid(), getppid());
+            DTRACE("Subprocess started: PID: %d, PPID: %d\n", getpid(), getppid());
             while(1) {
                 fgets(input, 512, stdin);
 
                 if (write(sockfd, input, strlen(input)) == -1) {
-                    fprintf(stderr, "rembash: %s", strerror(errno));
+                    fprintf(stderr, "rembash: %s\n", strerror(errno));
                     kill(getppid(), 15); // SIGTERM to parent
                     exit(EXIT_FAILURE);
                 } // end if

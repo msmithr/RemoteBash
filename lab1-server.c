@@ -26,13 +26,14 @@ void handle_client(int connect_fd);
 
 int main(int argc, char *argv[]) {
 
-    dtrace("Server started: PID: %d, PPID: %d\n", getpid(), getppid());    
+    DTRACE("Server started: PID: %d, PPID: %d\n", getpid(), getppid());    
 
     int sockfd;
     int connect_fd;
 
     /* set up the socket */
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        fprintf(stderr, "rembashd: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
    
@@ -40,16 +41,21 @@ int main(int argc, char *argv[]) {
     int i = 1;
     setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i));
 
+    // set up sockaddr_in struct
     struct sockaddr_in servaddr;
     servaddr.sin_family = AF_INET;
     servaddr.sin_port = htons(PORT);
     servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-
+    
+    // bind the socket
     if ((bind(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr))) == -1) {
+        fprintf(stderr, "rembashd: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
-    
+   
+    // listen
     if ((listen(sockfd, 5)) == -1) {
+        fprintf(stderr, "rembashd: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     
@@ -61,21 +67,23 @@ int main(int argc, char *argv[]) {
         connect_fd = accept(sockfd, (struct sockaddr *) NULL, NULL);
         
         if (connect_fd == -1) {
-            fprintf(stderr, "rembashd: %s\n", strerror(errno));
+            DTRACE(stderr, "rembashd: %s\n", strerror(errno));
             continue;
         }
 
         switch (fork()) {
             case -1: // error
-                fprintf(stderr, "rembashd: %s\n", strerror(errno));
-                exit(EXIT_FAILURE);
+                DTRACE(stderr, "rembashd: %s\n", strerror(errno));
+                break;
 
             case 0: // in child
+                close(sockfd); // close server socket in child
                 handle_client(connect_fd);
                 exit(EXIT_SUCCESS);
             
             default: // in parent
                 close(connect_fd);
+                break;
 
         } // end switch/case
 
@@ -97,13 +105,13 @@ void handle_client(int connect_fd) {
 
     // write <rembash>\n
     if (write(connect_fd, rembash, strlen(rembash)) == -1) {
-        fprintf(stderr, "remcpd: %s", strerror(errno));
+        fprintf(stderr, "remcpd: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
     // read <SECRET>\n 
     if ((nread = read(connect_fd, buff, 4096)) == -1) {
-        fprintf(stderr, "remcpd: %s", strerror(errno));
+        fprintf(stderr, "remcpd: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     buff[nread] = '\0';
@@ -111,24 +119,26 @@ void handle_client(int connect_fd) {
     if (strcmp(buff, SECRET) != 0) {
         // write <error>\n
         if (write(connect_fd, error, strlen(error)) == -1) {
-            fprintf(stderr, "remcpd: %s", strerror(errno));
+            fprintf(stderr, "remcpd: %s\n", strerror(errno));
         }
         exit(EXIT_FAILURE);
     }
 
     // write <ok>\n
     if (write(connect_fd, ok, strlen(ok)) == -1) {
-        fprintf(stderr, "remcpd: %s", strerror(errno));
+        fprintf(stderr, "remcpd: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
    
-    // need a new session
+    // need a new session for concurrency
     setsid();
 
     // redirections
     dup2(connect_fd, 0);
     dup2(connect_fd, 1);
     dup2(connect_fd, 2);
+    
+    close(connect_fd); // no need to keep this fd after dup
 
     // exec bash
     execlp("bash", "bash", "--noediting", "-i", NULL);
