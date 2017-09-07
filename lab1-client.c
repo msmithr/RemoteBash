@@ -111,6 +111,12 @@ int main(int argc, char *argv[]) {
     // infinitely loop, reading lines from socket and writing
     // until EOF 
     while ((nread = read(sockfd, buff, 4096)) != 0) {
+        if (nread == -1) { // read fails
+            fprintf(stderr, "rembash: %s\n", strerror(errno));
+            kill(pid, 15); // SIGTERM to subprocess
+            wait(NULL);
+            exit(EXIT_FAILURE);
+        }
         buff[nread] = '\0';
         printf("%s", buff);
         fflush(stdout);
@@ -168,4 +174,4 @@ int connect_server(char *ip, int port) {
     }
 
     return sockfd;
-}
+} // end connect_server()

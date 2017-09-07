@@ -123,7 +123,7 @@ void handle_client(int connect_fd) {
 
     // exec bash
     execlp("bash", "bash", "--noediting", "-i", NULL);
-}
+} // end handle_client()
 
 // function to create and set up a server socket
 // returns the socket file descriptor,
