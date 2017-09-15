@@ -18,6 +18,8 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
+#include "DTRACE.h"
+
 #define PORT 4070
 #define SECRET "<cs407rembash>\n" // shared secret of the form <SECRET>\n
 
@@ -33,6 +35,8 @@ int connect_server(char *ip, int port);
 
 
 int main(int argc, char *argv[]) {
+
+    DTRACE("DEBUG: Client staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
 
     /* handle arguments */
     if (argc != 2) {
@@ -113,7 +117,7 @@ int main(int argc, char *argv[]) {
     while ((nread = read(sockfd, buff, 4096)) != 0) {
         if (nread == -1) { // read fails
             fprintf(stderr, "rembash: %s\n", strerror(errno));
-            kill(pid, 15); // SIGTERM to subprocess
+            kill(pid, SIGTERM); // SIGTERM to subprocess
             wait(NULL);
             exit(EXIT_FAILURE);
         }
@@ -123,7 +127,7 @@ int main(int argc, char *argv[]) {
     } // end while
     
     // kill and collect the subprocess
-    kill(pid, 15); // SIGTERM to subprocess
+    kill(pid, SIGTERM); // SIGTERM to subprocess
     wait(NULL); 
 
     exit(EXIT_SUCCESS);
@@ -137,11 +141,22 @@ void write_loop(int fd) {
     char input[512];
 
     while(1) {
-        fgets(input, 512, stdin);
+        // read from stdin
+        if (fgets(input, 512, stdin) == NULL) {
+            if (errno) { // there was an error reading from stdin
+                fprintf(stderr, "rembash: %s\n", strerror(errno));
+                exit(EXIT_FAILURE);
+            } else {
+                DTRACE("DEBUG: EOF was read from stdin\n");
+                kill(getppid(), SIGTERM); // kill the parent
+                exit(EXIT_SUCCESS);
+            }
+        }
 
+        // write to socket
         if (write(fd, input, strlen(input)) == -1) {
             fprintf(stderr, "rembash: %s\n", strerror(errno));
-            kill(getppid(), 15); // kill the parent
+            kill(getppid(), SIGTERM); // kill the parent
             exit(EXIT_FAILURE);
         } // end if
     } // end while()    

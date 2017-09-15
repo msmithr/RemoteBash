@@ -16,6 +16,8 @@
 #include <sys/socket.h>
 #include <signal.h>
 
+#include "DTRACE.h"
+
 #define PORT 4070
 #define SECRET "<cs407rembash>\n"
 
@@ -31,6 +33,8 @@ int setup_server_socket(int port);
 
 int main(int argc, char *argv[]) {
 
+    DTRACE("DEBUG: Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
+
     int connect_fd;
     int sockfd;
 
@@ -45,19 +49,22 @@ int main(int argc, char *argv[]) {
     /* infinite loop accepting connections */
     while(1) {
         connect_fd = accept(sockfd, (struct sockaddr *) NULL, NULL);
-        
+
         if (connect_fd == -1) {
-            continue;
+            continue; // if accept failed, continue to next iteration
         }
 
         switch (fork()) {
         case -1: // error
+            fprintf(stderr, "remcpd: %s\n", strerror(errno));
+            exit(EXIT_FAILURE);
             break;
 
         case 0: // in child
+            DTRACE("DEBUG: Subprocess for client created: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
             close(sockfd); // close server socket in child
             handle_client(connect_fd);
-            exit(EXIT_SUCCESS);
+            exit(EXIT_FAILURE);
         
         default: // in parent
             close(connect_fd); // close connection in parent
@@ -67,6 +74,7 @@ int main(int argc, char *argv[]) {
 
     } // end while
 
+    exit(EXIT_FAILURE);
 } // end main()
 
 
@@ -86,43 +94,53 @@ void handle_client(int connect_fd) {
 
     // write <rembash>\n
     if (write(connect_fd, rembash, strlen(rembash)) == -1) {
-        fprintf(stderr, "remcpd: %s\n", strerror(errno));
+        DTRACE("DEBUG: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
     // read <SECRET>\n 
     if ((nread = read(connect_fd, buff, 4096)) == -1) {
-        fprintf(stderr, "remcpd: %s\n", strerror(errno));
+        DTRACE("DEBUG: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     buff[nread] = '\0';
 
     if (strcmp(buff, SECRET) != 0) {
         // write <error>\n
+        DTRACE("DEBUG: remcpd: invalid secret from client\n"); 
         if (write(connect_fd, error, strlen(error)) == -1) {
-            fprintf(stderr, "remcpd: %s\n", strerror(errno));
+            DTRACE("DEBUG: remcpd: %s\n", strerror(errno));
         }
         exit(EXIT_FAILURE);
     }
 
     // write <ok>\n
     if (write(connect_fd, ok, strlen(ok)) == -1) {
-        fprintf(stderr, "remcpd: %s\n", strerror(errno));
+        DTRACE("DEBUG: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
    
     // need a new session for concurrency
-    setsid();
-
-    // redirections
-    dup2(connect_fd, 0);
-    dup2(connect_fd, 1);
-    dup2(connect_fd, 2);
+    if (setsid() == -1) {
+        DTRACE("DEBUG: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
     
+    // redirections
+    for (int i = 0; i < 3; i++) {
+        if (dup2(connect_fd, i) == -1) {
+            DTRACE("DEBUG: %s\n", strerror(errno));
+            exit(EXIT_FAILURE);
+        }
+    } 
+
     close(connect_fd); // no need to keep this fd after dup
 
     // exec bash
     execlp("bash", "bash", "--noediting", "-i", NULL);
+    DTRACE("DEBUG: %s\n", strerror(errno));
+    exit(EXIT_FAILURE);
+
 } // end handle_client()
 
 // function to create and set up a server socket
@@ -151,7 +169,7 @@ int setup_server_socket(int port) {
     }
 
     // set the socket to listen
-    if ((listen(sockfd, 5)) == -1) {
+    if ((listen(sockfd, 10)) == -1) {
         return -1;
     }
 
