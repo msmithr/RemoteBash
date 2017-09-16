@@ -33,9 +33,17 @@ void write_loop(int fd);
 // and -2 if the given ip address is invalid (because inet_aton doesn't set errno)
 int connect_server(char *ip, int port);
 
+// performs client end of the rembash protocol
+// returns 0, or -1 on failure
+int protocol(int sockfd);
 
 int main(int argc, char *argv[]) {
 
+    char *ip = argv[1];
+    char buff[4096];
+    int nread, sockfd;
+    pid_t pid;
+    
     DTRACE("DEBUG: Client staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
 
     /* handle arguments */
@@ -43,75 +51,29 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "usage: ./rembash <ip address>\n");
         exit(EXIT_FAILURE);
     }
-
-    char *ip = argv[1];
-
-    /* connect to the server */
-    int sockfd;
-
-    switch (sockfd = connect_server(ip, PORT)) {
-    case -2:
-        fprintf(stderr, "rembash: invalid ip address: %s\n", ip);
-        exit(EXIT_FAILURE);
-    case -1:
-        fprintf(stderr, "rembash: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    } // end switch/case
-
-    /* perform protocol */
-    char buff[4096];
-    int nread;
-
-    // read <rembash>\n
-    if ((nread = read(sockfd, buff, 4096)) == -1) {
-        fprintf(stderr, "rembash: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-    buff[nread] = '\0';
-
-    if (strcmp(buff, "<rembash>\n") != 0) {
-        fprintf(stderr, "rembash: Invalid protocol from server\n");
+    
+    // connect to server
+    if ((sockfd = connect_server(ip, PORT)) == -1) {
+        fprintf(stderr, "rembash: error occured while attempting to connect to server\n");
         exit(EXIT_FAILURE);
     }
 
-    // write <SECRET>\n
-    if (write(sockfd, SECRET, strlen(SECRET)) == -1) {
-        fprintf(stderr, "rembash: %s\n", strerror(errno));
+    // perform protocol
+    if (protocol(sockfd) == -1) {
+        fprintf(stderr, "rembash: error during rembash protocol\n");
         exit(EXIT_FAILURE);
     }
-
-    // read <ok>\n or <error>\n
-    if ((nread = read(sockfd, buff, 4096)) == -1) {
-        fprintf(stderr, "rembash: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-    buff[nread] = '\0';
-
-    if (strcmp(buff, "<error>\n") == 0) {
-        fprintf(stderr, "rembash: Invalid secret\n");
-        exit(EXIT_FAILURE);
-    }
-
-    if (strcmp(buff, "<ok>\n") != 0) {
-        fprintf(stderr, "rembash: Invalid protocol from server\n");
-        exit(EXIT_FAILURE);
-    }
-
-    /* fork off a subprocess to infinitely loop,
-     * read lines from stdin and write them to the socket */
-    pid_t pid;
 
     switch (pid = fork()) {
-    case -1:
+    case -1: // error
         fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
-        
     case 0: // in child process
         write_loop(sockfd);
         exit(EXIT_FAILURE);
-
     } // end switch/case
 
+    
     // infinitely loop, reading lines from socket and writing
     // until EOF 
     while ((nread = read(sockfd, buff, 4096)) != 0) {
@@ -134,6 +96,51 @@ int main(int argc, char *argv[]) {
 
 } // end main()
 
+// performs client end of the rembash protocol
+// returns 0, or -1 on failure
+int protocol(int sockfd) {
+
+    /* perform protocol */
+    char buff[4096];
+    int nread;
+
+    // read <rembash>\n
+    if ((nread = read(sockfd, buff, 4096)) == -1) {
+        DTRACE("DEBUG: %s\n", strerror(errno));
+        return -1;
+    }
+    buff[nread] = '\0';
+
+    if (strcmp(buff, "<rembash>\n") != 0) {
+        DTRACE("DEBUG: invalid protocol from server\n");
+        return -1;
+    }
+
+    // write <SECRET>\n
+    if (write(sockfd, SECRET, strlen(SECRET)) == -1) {
+        DTRACE("DEBUG: %s\n", strerror(errno));
+        return -1;
+    }
+
+    // read <ok>\n or <error>\n
+    if ((nread = read(sockfd, buff, 4096)) == -1) {
+        DTRACE("DEBUG: %s\n", strerror(errno));
+        return -1;
+    }
+    buff[nread] = '\0';
+
+    if (strcmp(buff, "<error>\n") == 0) {
+        DTRACE("DEBUG: Invalid secret\n");
+        return -1;
+    }
+
+    if (strcmp(buff, "<ok>\n") != 0) {
+        DTRACE("DEBUG: Invalid protocol from server\n");
+        return -1;
+    }
+
+    return 0;
+}
 
 // function to be called by the child process
 // continuously pulls text from the local terminal and writes it to the fd
@@ -172,6 +179,7 @@ int connect_server(char *ip, int port) {
 
     // create socket
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        DTRACE("DEBUG: %s\n", strerror(errno));
         return -1;
     }
     
@@ -180,11 +188,13 @@ int connect_server(char *ip, int port) {
     servaddr.sin_family = AF_INET;
     servaddr.sin_port = htons(port);
     if (inet_aton(ip, &servaddr.sin_addr) == 0) {
-        return -2;
+        DTRACE("DEBUG: invalid ip address: %s\n", ip);
+        return -1;
     }
     
     // connect
     if (connect(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr)) == -1) {
+        DTRACE("DEBUG: %s\n", strerror(errno));
         return -1;    
     }
 

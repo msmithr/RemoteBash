@@ -31,12 +31,15 @@ void handle_client(int connect_fd);
 // or -1 on failure
 int setup_server_socket(int port);
 
+// performs the server end of the rembash protocol
+// returns 0, or -1 on failure
+int protocol(int connect_fd);
+
 int main(int argc, char *argv[]) {
 
     DTRACE("DEBUG: Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
 
-    int connect_fd;
-    int sockfd;
+    int connect_fd, sockfd;
 
     if ((sockfd = setup_server_socket(PORT)) == -1) {
         fprintf(stderr, "rembashd: %s\n", strerror(errno));
@@ -74,6 +77,7 @@ int main(int argc, char *argv[]) {
 
     } // end while
 
+    // should never get here
     exit(EXIT_FAILURE);
 } // end main()
 
@@ -83,50 +87,17 @@ int main(int argc, char *argv[]) {
 // performs protocol, redirects stdin, stdout, and stderr, and exec's into bash
 void handle_client(int connect_fd) {
 
-    /* initialize variables */
-    const char *rembash = "<rembash>\n";
-    const char *error = "<error>\n";
-    const char *ok = "<ok>\n";
-    
-    /* perform protocol */
-    char buff[4096];
-    int nread;
-
-    // write <rembash>\n
-    if (write(connect_fd, rembash, strlen(rembash)) == -1) {
-        DTRACE("DEBUG: %s\n", strerror(errno));
+    if (protocol(connect_fd) == -1) {
         exit(EXIT_FAILURE);
     }
 
-    // read <SECRET>\n 
-    if ((nread = read(connect_fd, buff, 4096)) == -1) {
-        DTRACE("DEBUG: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-    buff[nread] = '\0';
-
-    if (strcmp(buff, SECRET) != 0) {
-        // write <error>\n
-        DTRACE("DEBUG: remcpd: invalid secret from client\n"); 
-        if (write(connect_fd, error, strlen(error)) == -1) {
-            DTRACE("DEBUG: remcpd: %s\n", strerror(errno));
-        }
-        exit(EXIT_FAILURE);
-    }
-
-    // write <ok>\n
-    if (write(connect_fd, ok, strlen(ok)) == -1) {
-        DTRACE("DEBUG: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-   
     // need a new session for concurrency
     if (setsid() == -1) {
         DTRACE("DEBUG: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     
-    // redirections
+    // redirect stdin/stdout/stderr to the socket 
     for (int i = 0; i < 3; i++) {
         if (dup2(connect_fd, i) == -1) {
             DTRACE("DEBUG: %s\n", strerror(errno));
@@ -136,12 +107,54 @@ void handle_client(int connect_fd) {
 
     close(connect_fd); // no need to keep this fd after dup
 
-    // exec bash
+    // exec into bash
     execlp("bash", "bash", "--noediting", "-i", NULL);
     DTRACE("DEBUG: %s\n", strerror(errno));
-    exit(EXIT_FAILURE);
+    exit(EXIT_FAILURE); // exec failed
 
 } // end handle_client()
+
+// performs the server end of the rembash protocol
+// returns 0, or -1 on failure
+int protocol(int connect_fd) {
+    /* initialize variables */
+    const char *rembash = "<rembash>\n";
+    const char *error = "<error>\n";
+    const char *ok = "<ok>\n";
+
+    char buff[4096];
+    int nread;
+
+    // write <rembash>\n
+    if (write(connect_fd, rembash, strlen(rembash)) == -1) {
+        DTRACE("DEBUG: %s\n", strerror(errno));
+        return -1;
+    }
+
+    // read <SECRET>\n 
+    if ((nread = read(connect_fd, buff, 4096)) == -1) {
+        DTRACE("DEBUG: %s\n", strerror(errno));
+        return -1;
+    }
+    buff[nread] = '\0';
+
+    if (strcmp(buff, SECRET) != 0) {
+        // write <error>\n
+        DTRACE("DEBUG: remcpd: invalid secret from client\n"); 
+        if (write(connect_fd, error, strlen(error)) == -1) {
+            DTRACE("DEBUG: remcpd: %s\n", strerror(errno));
+        }
+        return -1;
+    }
+
+    // write <ok>\n
+    if (write(connect_fd, ok, strlen(ok)) == -1) {
+        DTRACE("DEBUG: %s\n", strerror(errno));
+        return -1;
+    }
+   
+    return 0;
+} // end protocol()
 
 // function to create and set up a server socket
 // returns the socket file descriptor,
