@@ -7,6 +7,7 @@
 //
 // author: Michael Smith
 
+#define _XOPEN_SOURCE 600
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,9 +16,8 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <signal.h>
-
+#include <fcntl.h>
 #include "DTRACE.h"
-
 #define PORT 4070
 #define SECRET "<cs407rembash>\n"
 
@@ -34,6 +34,11 @@ int setup_server_socket(int port);
 // performs the server end of the rembash protocol
 // returns 0, or -1 on failure
 int protocol(int connect_fd);
+
+// creates and sets up the psuedoterminal master/slave
+// returns master fd, and stores subprocess pid in pointer
+// returns -1 on failure
+int setuppty(pid_t *pid);
 
 int main(int argc, char *argv[]) {
 
@@ -87,31 +92,21 @@ int main(int argc, char *argv[]) {
 // performs protocol, redirects stdin, stdout, and stderr, and exec's into bash
 void handle_client(int connect_fd) {
 
+    pid_t spid;
+    int mfd;
+    char buff[4096];
     if (protocol(connect_fd) == -1) {
         exit(EXIT_FAILURE);
     }
-
-    // need a new session for concurrency
-    if (setsid() == -1) {
-        DTRACE("DEBUG: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
     
-    // redirect stdin/stdout/stderr to the socket 
-    for (int i = 0; i < 3; i++) {
-        if (dup2(connect_fd, i) == -1) {
-            DTRACE("DEBUG: %s\n", strerror(errno));
-            exit(EXIT_FAILURE);
-        }
-    } 
+    mfd = setuppty(&spid); // creates child process, 
 
-    close(connect_fd); // no need to keep this fd after dup
+    // connect_fd => mfd
+    // mfd => connect_fd
+    
 
-    // exec into bash
-    execlp("bash", "bash", "--noediting", "-i", NULL);
-    DTRACE("DEBUG: %s\n", strerror(errno));
-    exit(EXIT_FAILURE); // exec failed
 
+    exit(EXIT_SUCCESS);
 } // end handle_client()
 
 // performs the server end of the rembash protocol
@@ -189,3 +184,69 @@ int setup_server_socket(int port) {
     return sockfd;
 
 } // end setup_server_socket()
+
+// creates and sets up the psuedoterminal master/slave
+// returns master fd, and stores subprocess pid in pointer
+// returns -1 on failure
+int setuppty(pid_t *pid) {
+    int mfd;
+    char *slavepointer;
+    pid_t slavepid;
+
+    if ((mfd = posix_openpt(O_RDWR | O_NOCTTY)) == -1) {
+        return -1;
+    }
+
+    if (unlockpt(mfd) == -1) {
+        close(mfd);
+        return -1;
+    }
+
+    if ((slavepointer = ptsname(mfd)) == NULL) {
+        close(mfd);
+        return -1;
+    }
+
+    char sname[strlen(slavepointer)];
+    strcpy(sname, slavepointer);
+
+    if ((slavepid = fork()) == -1) {
+        return -1;
+    }
+
+    // parent
+    if (slavepid != 0) {
+        *pid = slavepid;
+        return mfd;
+    }
+   
+    int sfd;
+    close(mfd); // child has no need for this
+
+    // child
+    if (setsid() == -1) {
+        exit(EXIT_FAILURE);
+    }
+
+    if ((sfd = open(sname, O_RDWR)) == -1) {
+        exit(EXIT_FAILURE);
+    }
+
+    // tty settings here??
+
+    // redirect stdin/stdout/stderr to the pty slave 
+    for (int i = 0; i < 3; i++) {
+        if (dup2(sfd, i) == -1) {
+            DTRACE("DEBUG: %s\n", strerror(errno));
+            exit(EXIT_FAILURE);
+        }
+    } 
+
+    close(sfd); // no need for this anymore
+
+    // exec into bash
+    execlp("bash", "bash", "--noediting", "-i", NULL);
+
+    // should never reach here, just for gcc
+    exit(EXIT_FAILURE); 
+}
