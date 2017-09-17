@@ -23,8 +23,9 @@
 #define PORT 4070
 #define SECRET "<cs407rembash>\n" // shared secret of the form <SECRET>\n
 
-// continuously read from fromfd and write to tofd
-void write_loop(int fromfd, int tofd);
+// function to be called by the child process
+// continuously pulls text from the local terminal and writes it to the fd
+void write_loop(int fd);
 
 // function to create a connection to a tcp server
 // returns the socket file descriptor,
@@ -39,7 +40,8 @@ int protocol(int sockfd);
 int main(int argc, char *argv[]) {
 
     char *ip = argv[1];
-    int sockfd;
+    char buff[4096];
+    int nread, sockfd;
     pid_t pid;
     
     DTRACE("DEBUG: Client staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
@@ -67,12 +69,25 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     case 0: // in child process
-        write_loop(0, sockfd);
+        write_loop(sockfd);
         exit(EXIT_FAILURE);
     } // end switch/case
 
-    write_loop(sockfd, 1); 
-
+    
+    // infinitely loop, reading lines from socket and writing
+    // until EOF 
+    while ((nread = read(sockfd, buff, 4096)) != 0) {
+        if (nread == -1) { // read fails
+            fprintf(stderr, "rembash: %s\n", strerror(errno));
+            kill(pid, SIGTERM); // SIGTERM to subprocess
+            wait(NULL);
+            exit(EXIT_FAILURE);
+        }
+        buff[nread] = '\0';
+        printf("%s", buff);
+        fflush(stdout);
+    } // end while
+    
     // kill and collect the subprocess
     kill(pid, SIGTERM); // SIGTERM to subprocess
     wait(NULL); 
@@ -127,18 +142,33 @@ int protocol(int sockfd) {
     return 0;
 }
 
-// continuously read from fromfd and write to tofd
-void write_loop(int fromfd, int tofd) {
-    int nread;
-    char buff[4096];
-    while ((nread = read(fromfd, buff, 4096)) > 0) {
-        buff[nread] = '\0';
-        if (write(tofd, buff, strlen(buff)) == -1) {
-            return;
+// function to be called by the child process
+// continuously pulls text from the local terminal and writes it to the fd
+void write_loop(int fd) {
+    char input[512];
+
+    while(1) {
+        // read from stdin
+        if (fgets(input, 512, stdin) == NULL) {
+            if (errno) { // there was an error reading from stdin
+                fprintf(stderr, "rembash: %s\n", strerror(errno));
+                exit(EXIT_FAILURE);
+            } else {
+                DTRACE("DEBUG: EOF was read from stdin\n");
+                kill(getppid(), SIGTERM); // kill the parent
+                exit(EXIT_SUCCESS);
+            }
         }
-    }   
-    return;
-}
+
+        // write to socket
+        if (write(fd, input, strlen(input)) == -1) {
+            fprintf(stderr, "rembash: %s\n", strerror(errno));
+            kill(getppid(), SIGTERM); // kill the parent
+            exit(EXIT_FAILURE);
+        } // end if
+    } // end while()    
+
+} // end write_loop()
 
 // function to create a connection to a tcp server
 // returns the socket file descriptor,
