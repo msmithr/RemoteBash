@@ -37,8 +37,9 @@ int protocol(int connect_fd);
 
 // creates and sets up the psuedoterminal master/slave
 // returns master fd, and stores subprocess pid in pointer
+// must be given the socket fd to close it in subprocess
 // returns -1 on failure
-int setuppty(pid_t *pid);
+int setuppty(pid_t *pid, int connect_fd);
 
 // continuously read from fromfd and write to tofd
 void write_loop(int fromfd, int tofd);
@@ -101,17 +102,21 @@ void handle_client(int connect_fd) {
     if (protocol(connect_fd) == -1) {
         exit(EXIT_FAILURE);
     }
-    
-    mfd = setuppty(&spid); // creates child process, 
+
+    mfd = setuppty(&spid, connect_fd); // creates child process, 
 
     switch (wpid = fork()) {
     case -1:
         exit(EXIT_FAILURE);
     case 0:
         write_loop(connect_fd, mfd);
+        close(connect_fd);
+        close(mfd);
         exit(EXIT_FAILURE);
     default:
         write_loop(mfd, connect_fd);
+        close(connect_fd);
+        close(mfd);
         exit(EXIT_FAILURE);
     }
 
@@ -200,7 +205,7 @@ int setup_server_socket(int port) {
 // creates and sets up the psuedoterminal master/slave
 // returns master fd, and stores subprocess pid in pointer
 // returns -1 on failure
-int setuppty(pid_t *pid) {
+int setuppty(pid_t *pid, int connect_fd) {
     int mfd;
     char *slavepointer;
     pid_t slavepid;
@@ -232,10 +237,11 @@ int setuppty(pid_t *pid) {
         return mfd;
     }
    
+    // child
     int sfd;
     close(mfd); // child has no need for this
+    close(connect_fd);
 
-    // child
     if (setsid() == -1) {
         exit(EXIT_FAILURE);
     }
@@ -244,7 +250,6 @@ int setuppty(pid_t *pid) {
         exit(EXIT_FAILURE);
     }
 
-    // tty settings here??
 
     // redirect stdin/stdout/stderr to the pty slave 
     for (int i = 0; i < 3; i++) {
@@ -263,11 +268,16 @@ int setuppty(pid_t *pid) {
     exit(EXIT_FAILURE); 
 }
 
-
+// continuously read from fromfd and write to tofd
 void write_loop(int fromfd, int tofd) {
     char buff[4096];
-    while (read(fromfd, buff, 4096) > 0) {
-        write(tofd, buff, strlen(buff));
+    int nread;
+
+    while ((nread = read(fromfd, buff, 4096)) > 0) {
+        buff[nread] = '\0';
+        if (write(tofd, buff, strlen(buff)) == -1) {
+            return;
+        }
     }
     return;
 }
