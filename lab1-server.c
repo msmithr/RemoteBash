@@ -40,6 +40,9 @@ int protocol(int connect_fd);
 // returns -1 on failure
 int setuppty(pid_t *pid);
 
+// continuously read from fromfd and write to tofd
+void write_loop(int fromfd, int tofd);
+
 int main(int argc, char *argv[]) {
 
     DTRACE("DEBUG: Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
@@ -92,20 +95,29 @@ int main(int argc, char *argv[]) {
 // performs protocol, redirects stdin, stdout, and stderr, and exec's into bash
 void handle_client(int connect_fd) {
 
-    pid_t spid;
+    pid_t spid, wpid;
     int mfd;
-    char buff[4096];
+
     if (protocol(connect_fd) == -1) {
         exit(EXIT_FAILURE);
     }
     
     mfd = setuppty(&spid); // creates child process, 
 
+    switch (wpid = fork()) {
+    case -1:
+        exit(EXIT_FAILURE);
+    case 0:
+        write_loop(connect_fd, mfd);
+        exit(EXIT_FAILURE);
+    default:
+        write_loop(mfd, connect_fd);
+        exit(EXIT_FAILURE);
+    }
+
     // connect_fd => mfd
     // mfd => connect_fd
     
-
-
     exit(EXIT_SUCCESS);
 } // end handle_client()
 
@@ -249,4 +261,13 @@ int setuppty(pid_t *pid) {
 
     // should never reach here, just for gcc
     exit(EXIT_FAILURE); 
+}
+
+
+void write_loop(int fromfd, int tofd) {
+    char buff[4096];
+    while (read(fromfd, buff, 4096) > 0) {
+        write(tofd, buff, strlen(buff));
+    }
+    return;
 }
