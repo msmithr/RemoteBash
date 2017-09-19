@@ -1,4 +1,4 @@
-// CS 407 Lab 01
+// CS 407 Lab 02
 //
 // Client/server application allowing user to run bash
 // commands on a remote machine, similar to SSH or TELNET
@@ -112,11 +112,13 @@ void handle_client(int connect_fd) {
         write_loop(connect_fd, mfd);
         close(connect_fd);
         close(mfd);
+        kill(getppid(), SIGTERM);
         exit(EXIT_FAILURE);
     default:
         write_loop(mfd, connect_fd);
         close(connect_fd);
         close(mfd);
+        kill(wpid, SIGTERM);
         exit(EXIT_FAILURE);
     }
 
