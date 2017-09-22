@@ -1,4 +1,4 @@
-// CS407 Lab 01
+// CS407 Lab 02
 // 
 // Client/server application allowing user to run bash
 // commands on a remote machine, similar to SSH or Telnet
@@ -17,15 +17,13 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-
+#include <termios.h>
 #include "DTRACE.h"
-
 #define PORT 4070
-#define SECRET "<cs407rembash>\n" // shared secret of the form <SECRET>\n
+#define SECRET "cs407rembash"
 
-// function to be called by the child process
-// continuously pulls text from the local terminal and writes it to the fd
-void write_loop(int fd);
+// continuously read from fromfd and write to tofd
+void write_loop(int fromfd, int tofd);
 
 // function to create a connection to a tcp server
 // returns the socket file descriptor,
@@ -40,9 +38,9 @@ int protocol(int sockfd);
 int main(int argc, char *argv[]) {
 
     char *ip = argv[1];
-    char buff[4096];
-    int nread, sockfd;
+    int sockfd;
     pid_t pid;
+    struct termios termset, saved_termset;
     
     DTRACE("DEBUG: Client staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
 
@@ -64,34 +62,29 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    // set pty to noncanonical mode
+    tcgetattr(0, &termset);
+    saved_termset = termset; // save tty settings
+    termset.c_lflag &= ~ICANON;
+    termset.c_lflag &= ~ECHO;
+    tcsetattr(0, TCSAFLUSH, &termset);
+
     switch (pid = fork()) {
     case -1: // error
         fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     case 0: // in child process
-        write_loop(sockfd);
+        write_loop(0, sockfd);
         exit(EXIT_FAILURE);
     } // end switch/case
 
-    
-    // infinitely loop, reading lines from socket and writing
-    // until EOF 
-    while ((nread = read(sockfd, buff, 4096)) != 0) {
-        if (nread == -1) { // read fails
-            fprintf(stderr, "rembash: %s\n", strerror(errno));
-            kill(pid, SIGTERM); // SIGTERM to subprocess
-            wait(NULL);
-            exit(EXIT_FAILURE);
-        }
-        buff[nread] = '\0';
-        printf("%s", buff);
-        fflush(stdout);
-    } // end while
-    
+    write_loop(sockfd, 1); 
+
     // kill and collect the subprocess
     kill(pid, SIGTERM); // SIGTERM to subprocess
     wait(NULL); 
 
+    tcsetattr(0, TCSAFLUSH, &saved_termset);
     exit(EXIT_SUCCESS);
 
 } // end main()
@@ -104,6 +97,11 @@ int protocol(int sockfd) {
     char buff[4096];
     int nread;
 
+    const char * const rembash = "<rembash>\n";
+    const char * const ok = "<ok>\n";
+    const char * const error = "<error>\n";
+    const char * const secret = "<" SECRET ">\n";
+
     // read <rembash>\n
     if ((nread = read(sockfd, buff, 4096)) == -1) {
         DTRACE("DEBUG: %s\n", strerror(errno));
@@ -111,13 +109,13 @@ int protocol(int sockfd) {
     }
     buff[nread] = '\0';
 
-    if (strcmp(buff, "<rembash>\n") != 0) {
+    if (strcmp(buff, rembash) != 0) {
         DTRACE("DEBUG: invalid protocol from server\n");
         return -1;
     }
 
     // write <SECRET>\n
-    if (write(sockfd, SECRET, strlen(SECRET)) == -1) {
+    if (write(sockfd, secret, strlen(secret)) == -1) {
         DTRACE("DEBUG: %s\n", strerror(errno));
         return -1;
     }
@@ -129,12 +127,12 @@ int protocol(int sockfd) {
     }
     buff[nread] = '\0';
 
-    if (strcmp(buff, "<error>\n") == 0) {
+    if (strcmp(buff, error) == 0) {
         DTRACE("DEBUG: Invalid secret\n");
         return -1;
     }
 
-    if (strcmp(buff, "<ok>\n") != 0) {
+    if (strcmp(buff, ok) != 0) {
         DTRACE("DEBUG: Invalid protocol from server\n");
         return -1;
     }
@@ -142,33 +140,18 @@ int protocol(int sockfd) {
     return 0;
 }
 
-// function to be called by the child process
-// continuously pulls text from the local terminal and writes it to the fd
-void write_loop(int fd) {
-    char input[512];
-
-    while(1) {
-        // read from stdin
-        if (fgets(input, 512, stdin) == NULL) {
-            if (errno) { // there was an error reading from stdin
-                fprintf(stderr, "rembash: %s\n", strerror(errno));
-                exit(EXIT_FAILURE);
-            } else {
-                DTRACE("DEBUG: EOF was read from stdin\n");
-                kill(getppid(), SIGTERM); // kill the parent
-                exit(EXIT_SUCCESS);
-            }
+// continuously read from fromfd and write to tofd
+void write_loop(int fromfd, int tofd) {
+    int nread;
+    char buff[4096];
+    while ((nread = read(fromfd, buff, 4096)) > 0) {
+        buff[nread] = '\0';
+        if (write(tofd, buff, strlen(buff)) == -1) {
+            return;
         }
-
-        // write to socket
-        if (write(fd, input, strlen(input)) == -1) {
-            fprintf(stderr, "rembash: %s\n", strerror(errno));
-            kill(getppid(), SIGTERM); // kill the parent
-            exit(EXIT_FAILURE);
-        } // end if
-    } // end while()    
-
-} // end write_loop()
+    }   
+    return;
+}
 
 // function to create a connection to a tcp server
 // returns the socket file descriptor,

@@ -1,4 +1,4 @@
-// CS 407 Lab 01
+// CS 407 Lab 02
 //
 // Client/server application allowing user to run bash
 // commands on a remote machine, similar to SSH or TELNET
@@ -7,6 +7,7 @@
 //
 // author: Michael Smith
 
+#define _XOPEN_SOURCE 600
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,25 +16,17 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <signal.h>
-
+#include <fcntl.h>
 #include "DTRACE.h"
-
 #define PORT 4070
-#define SECRET "<cs407rembash>\n"
+#define SECRET "cs407rembash"
 
-// function to be called be the child processes
-// handles each client given the file descriptor 
-// performs protocol, redirects stdin, stdout, and stderr, and exec's into bash
+// function prototypes
 void handle_client(int connect_fd);
-
-// function to create and set up a tcp server socket
-// returns the socket file descriptor,
-// or -1 on failure
 int setup_server_socket(int port);
-
-// performs the server end of the rembash protocol
-// returns 0, or -1 on failure
 int protocol(int connect_fd);
+int setuppty(pid_t *pid, int connect_fd);
+void write_loop(int fromfd, int tofd);
 
 int main(int argc, char *argv[]) {
 
@@ -51,21 +44,19 @@ int main(int argc, char *argv[]) {
 
     /* infinite loop accepting connections */
     while(1) {
-        connect_fd = accept(sockfd, (struct sockaddr *) NULL, NULL);
-
-        if (connect_fd == -1) {
+        if ((connect_fd = accept(sockfd, (struct sockaddr *) NULL, NULL)) == -1) {
             continue; // if accept failed, continue to next iteration
         }
 
         switch (fork()) {
-        case -1: // error
+        case -1: // error; close fd and move on
             fprintf(stderr, "remcpd: %s\n", strerror(errno));
-            exit(EXIT_FAILURE);
+            close(connect_fd);
             break;
 
         case 0: // in child
             DTRACE("DEBUG: Subprocess for client created: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
-            close(sockfd); // close server socket in child
+            close(sockfd); // close listening socket in child
             handle_client(connect_fd);
             exit(EXIT_FAILURE);
         
@@ -79,6 +70,7 @@ int main(int argc, char *argv[]) {
 
     // should never get here
     exit(EXIT_FAILURE);
+
 } // end main()
 
 
@@ -87,40 +79,50 @@ int main(int argc, char *argv[]) {
 // performs protocol, redirects stdin, stdout, and stderr, and exec's into bash
 void handle_client(int connect_fd) {
 
+    pid_t spid, wpid;
+    int mfd;
+
+    // perform rembash protocl
     if (protocol(connect_fd) == -1) {
+        // errors in the protocol are DTRACE'd out within the function 
         exit(EXIT_FAILURE);
     }
 
-    // need a new session for concurrency
-    if (setsid() == -1) {
+    if ((mfd = setuppty(&spid, connect_fd)) == -1) {
         DTRACE("DEBUG: %s\n", strerror(errno));
+    } // create the pty
+
+    switch (wpid = fork()) {
+    case -1:
+        exit(EXIT_FAILURE);
+    case 0:
+        write_loop(connect_fd, mfd);
+        close(connect_fd);
+        close(mfd);
+        kill(getppid(), SIGTERM);
+        exit(EXIT_FAILURE);
+    default:
+        write_loop(mfd, connect_fd);
+        close(connect_fd);
+        close(mfd);
+        kill(wpid, SIGTERM);
         exit(EXIT_FAILURE);
     }
+
+    // connect_fd => mfd
+    // mfd => connect_fd
     
-    // redirect stdin/stdout/stderr to the socket 
-    for (int i = 0; i < 3; i++) {
-        if (dup2(connect_fd, i) == -1) {
-            DTRACE("DEBUG: %s\n", strerror(errno));
-            exit(EXIT_FAILURE);
-        }
-    } 
-
-    close(connect_fd); // no need to keep this fd after dup
-
-    // exec into bash
-    execlp("bash", "bash", "--noediting", "-i", NULL);
-    DTRACE("DEBUG: %s\n", strerror(errno));
-    exit(EXIT_FAILURE); // exec failed
-
+    exit(EXIT_SUCCESS);
 } // end handle_client()
 
 // performs the server end of the rembash protocol
 // returns 0, or -1 on failure
 int protocol(int connect_fd) {
     /* initialize variables */
-    const char *rembash = "<rembash>\n";
-    const char *error = "<error>\n";
-    const char *ok = "<ok>\n";
+    const char * const rembash = "<rembash>\n";
+    const char * const error = "<error>\n";
+    const char * const ok = "<ok>\n";
+    const char * const secret = "<" SECRET ">\n";
 
     char buff[4096];
     int nread;
@@ -138,7 +140,7 @@ int protocol(int connect_fd) {
     }
     buff[nread] = '\0';
 
-    if (strcmp(buff, SECRET) != 0) {
+    if (strcmp(buff, secret) != 0) {
         // write <error>\n
         DTRACE("DEBUG: remcpd: invalid secret from client\n"); 
         if (write(connect_fd, error, strlen(error)) == -1) {
@@ -189,3 +191,82 @@ int setup_server_socket(int port) {
     return sockfd;
 
 } // end setup_server_socket()
+
+// creates and sets up the psuedoterminal master/slave
+// returns master fd, and stores subprocess pid in pointer
+// returns -1 on failure
+int setuppty(pid_t *pid, int connect_fd) {
+    int mfd;
+    char *slavepointer;
+    pid_t slavepid;
+
+    if ((mfd = posix_openpt(O_RDWR | O_NOCTTY)) == -1) {
+        return -1;
+    }
+
+    if (unlockpt(mfd) == -1) {
+        close(mfd);
+        return -1;
+    }
+
+    if ((slavepointer = ptsname(mfd)) == NULL) {
+        close(mfd);
+        return -1;
+    }
+
+    char sname[strlen(slavepointer)];
+    strcpy(sname, slavepointer);
+
+    if ((slavepid = fork()) == -1) {
+        return -1;
+    }
+
+    // parent
+    if (slavepid != 0) {
+        *pid = slavepid;
+        return mfd;
+    }
+   
+    // child will never return from this function
+    int sfd;
+    close(mfd); // child has no need for this
+    close(connect_fd);
+
+    if (setsid() == -1) {
+        exit(EXIT_FAILURE);
+    }
+
+    if ((sfd = open(sname, O_RDWR)) == -1) {
+        exit(EXIT_FAILURE);
+    }
+
+    // redirect stdin/stdout/stderr to the pty slave 
+    for (int i = 0; i < 3; i++) {
+        if (dup2(sfd, i) == -1) {
+            DTRACE("DEBUG: %s\n", strerror(errno));
+            exit(EXIT_FAILURE);
+        }
+    } 
+
+    close(sfd); // no need for this anymore
+
+    // exec into bash
+    execlp("bash", "bash", "--noediting", "-i", NULL);
+
+    // should never reach here, just for gcc
+    exit(EXIT_FAILURE); 
+}
+
+// continuously read from fromfd and write to tofd
+void write_loop(int fromfd, int tofd) {
+    char buff[4096];
+    int nread;
+
+    while ((nread = read(fromfd, buff, 4096)) > 0) {
+        buff[nread] = '\0';
+        if (write(tofd, buff, strlen(buff)) == -1) {
+            return;
+        }
+    }
+    return;
+}
