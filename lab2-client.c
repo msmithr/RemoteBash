@@ -39,11 +39,10 @@ int main(int argc, char *argv[]) {
     struct termios termset;
     struct sigaction act;
     
-    DTRACE("DEBUG: Client staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
+    DTRACE("%d: Client staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
 
     /* handle arguments */
     if (argc != 2) {
-        fprintf(stderr, "usage: ./rembash <ip address>\n");
         exit(EXIT_FAILURE);
     }
     
@@ -105,36 +104,36 @@ int protocol(int sockfd) {
 
     // read <rembash>\n
     if ((nread = read(sockfd, buff, 4096)) == -1) {
-        DTRACE("DEBUG: %s\n", strerror(errno));
+        DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;
     }
     buff[nread] = '\0';
 
     if (strcmp(buff, rembash) != 0) {
-        DTRACE("DEBUG: invalid protocol from server\n");
+        DTRACE("%d: invalid protocol from server\n", getpid());
         return -1;
     }
 
     // write <SECRET>\n
     if (write(sockfd, secret, strlen(secret)) == -1) {
-        DTRACE("DEBUG: %s\n", strerror(errno));
+        DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;
     }
 
     // read <ok>\n or <error>\n
     if ((nread = read(sockfd, buff, 4096)) == -1) {
-        DTRACE("DEBUG: %s\n", strerror(errno));
+        DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;
     }
     buff[nread] = '\0';
 
     if (strcmp(buff, error) == 0) {
-        DTRACE("DEBUG: Invalid secret\n");
+        DTRACE("%d: Invalid secret\n", getpid());
         return -1;
     }
 
     if (strcmp(buff, ok) != 0) {
-        DTRACE("DEBUG: Invalid protocol from server\n");
+        DTRACE("%d: Invalid protocol from server\n", getpid());
         return -1;
     }
 
@@ -163,7 +162,7 @@ int connect_server(char *ip, int port) {
 
     // create socket
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-        DTRACE("DEBUG: %s\n", strerror(errno));
+        DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;
     }
     
@@ -172,13 +171,13 @@ int connect_server(char *ip, int port) {
     servaddr.sin_family = AF_INET;
     servaddr.sin_port = htons(port);
     if (inet_aton(ip, &servaddr.sin_addr) == 0) {
-        DTRACE("DEBUG: invalid ip address: %s\n", ip);
+        DTRACE("%d: invalid ip address: %s\n", getpid(), ip);
         return -1;
     }
     
     // connect
     if (connect(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr)) == -1) {
-        DTRACE("DEBUG: %s\n", strerror(errno));
+        DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;    
     }
 
@@ -186,7 +185,7 @@ int connect_server(char *ip, int port) {
 } // end connect_server()
 
 void sigchld_handler(int signum) {
-    DTRACE("DEBUG: sigchld handler fired\n");
+    DTRACE("%d: SIGCHLD handler fired, child process has terminated\n", getpid());
     wait(NULL); // wait for child
     tcsetattr(0, TCSAFLUSH, &saved_termset); // reset tty settings
     exit(EXIT_SUCCESS);

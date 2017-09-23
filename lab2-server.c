@@ -30,11 +30,13 @@ int setuppty(pid_t *pid, int connect_fd);
 void write_loop(int fromfd, int tofd);
 void sigchld_handler(int signum);
 
+// pid's must be stored globally so they can be killed by
+// the signal handler
 pid_t spid, wpid;
 
 int main(int argc, char *argv[]) {
 
-    DTRACE("DEBUG: Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
+    DTRACE("%d: Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
 
     int connect_fd, sockfd;
 
@@ -42,6 +44,8 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "rembashd: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
+
+    DTRACE("%d: Listening socket fd=%d created\n", getpid(), sockfd);
 
     // children auto collected
     signal(SIGCHLD, SIG_IGN);
@@ -51,6 +55,8 @@ int main(int argc, char *argv[]) {
         if ((connect_fd = accept(sockfd, (struct sockaddr *) NULL, NULL)) == -1) {
             continue; // if accept failed, continue to next iteration
         }
+        
+        DTRACE("%d: Connection fd=%d accepted\n", getpid(), connect_fd);
 
         switch (fork()) {
         case -1: // error; close fd and move on
@@ -59,13 +65,15 @@ int main(int argc, char *argv[]) {
             break;
 
         case 0: // in child
-            DTRACE("DEBUG: Subprocess for client created: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
+            DTRACE("%d: Subprocess for client created: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
             close(sockfd); // close listening socket in child
+            DTRACE("%d: Listening socket fd=%d closed\n", getpid(), sockfd);
             handle_client(connect_fd);
             exit(EXIT_FAILURE);
         
         default: // in parent
             close(connect_fd); // close connection in parent
+            DTRACE("%d: Connection fd=%d closed\n", getpid(), connect_fd);
             break;
 
         } // end switch/case
@@ -96,27 +104,33 @@ void handle_client(int connect_fd) {
         exit(EXIT_FAILURE);
     }
 
+    DTRACE("%d: Protocol successful\n", getpid());
+
     // create the pty
     if ((mfd = setuppty(&spid, connect_fd)) == -1) {
-        DTRACE("DEBUG: %s\n", strerror(errno));
+        DTRACE("%d: %s\n", getpid(), strerror(errno));
     }
+
+    DTRACE("%d: PTY Created: mfd=%d, spid=%d\n", getpid(), mfd, spid);
 
     switch (wpid = fork()) {
     case -1:
         exit(EXIT_FAILURE);
     case 0:
+        DTRACE("%d: Subprocess created: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
+        DTRACE("%d: Data transfer: connect_fd=%d => mfd=%d\n", getpid(), connect_fd, mfd);
         write_loop(connect_fd, mfd);
+        DTRACE("%d: Transfer terminated, exiting\n", getpid());
         exit(EXIT_FAILURE); // sends sigchld to parent
     default:
+        DTRACE("%d: Data transfer: mfd=%d => connect_fd=%d\n", getpid(), connect_fd, mfd);
         write_loop(mfd, connect_fd);
+        DTRACE("%d Tranfer terminated, killing %d and exiting\n", getpid(), wpid);
         kill(wpid, SIGTERM); // kill child
         wait(NULL);
         exit(EXIT_FAILURE);
     }
 
-    // connect_fd => mfd
-    // mfd => connect_fd
-    
     exit(EXIT_SUCCESS);
 } // end handle_client()
 
@@ -134,29 +148,29 @@ int protocol(int connect_fd) {
 
     // write <rembash>\n
     if (write(connect_fd, rembash, strlen(rembash)) == -1) {
-        DTRACE("DEBUG: %s\n", strerror(errno));
+        DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;
     }
 
     // read <SECRET>\n 
     if ((nread = read(connect_fd, buff, 4096)) == -1) {
-        DTRACE("DEBUG: %s\n", strerror(errno));
+        DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;
     }
     buff[nread] = '\0';
 
     if (strcmp(buff, secret) != 0) {
         // write <error>\n
-        DTRACE("DEBUG: remcpd: invalid secret from client\n"); 
+        DTRACE("%d: remcpd: invalid secret from client\n", getpid()); 
         if (write(connect_fd, error, strlen(error)) == -1) {
-            DTRACE("DEBUG: remcpd: %s\n", strerror(errno));
+            DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
         }
         return -1;
     }
 
     // write <ok>\n
     if (write(connect_fd, ok, strlen(ok)) == -1) {
-        DTRACE("DEBUG: %s\n", strerror(errno));
+        DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;
     }
    
@@ -248,7 +262,7 @@ int setuppty(pid_t *pid, int connect_fd) {
     // redirect stdin/stdout/stderr to the pty slave 
     for (int i = 0; i < 3; i++) {
         if (dup2(sfd, i) == -1) {
-            DTRACE("DEBUG: %s\n", strerror(errno));
+            DTRACE("%d: %s\n", getpid(), strerror(errno));
             exit(EXIT_FAILURE);
         }
     } 
@@ -277,10 +291,14 @@ void write_loop(int fromfd, int tofd) {
 }
 
 void sigchld_handler(int signum) {
-    DTRACE("DEBUG: sigchld handler fired\n");
+    DTRACE("%d: SIGCHLD handler fired\n", getpid());
     kill(spid, SIGTERM);
     kill(wpid, SIGTERM);
-    wait(NULL);
-    wait(NULL);
+
+    // both children are now dead, so collect them
+    while (waitpid(-1, NULL, WNOHANG) > 0);
+
+    DTRACE("%d: Processes %d and %d have been terminated and collected\n", getpid(), spid, wpid);
+    DTRACE("%d: Terminating self\n", getpid());
     exit(EXIT_SUCCESS);
 }
