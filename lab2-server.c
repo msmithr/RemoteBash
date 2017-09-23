@@ -68,7 +68,7 @@ int main(int argc, char *argv[]) {
             break;
 
         case 0: // in child
-            DTRACE("%d: Subprocess for client created: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
+            DTRACE("%d: Client handler subprocess created: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
             close(sockfd); // close listening socket in child
             DTRACE("%d: Listening socket fd=%d closed\n", getpid(), sockfd);
             handle_client(connect_fd);
@@ -120,7 +120,7 @@ void handle_client(int connect_fd) {
     case -1:
         exit(EXIT_FAILURE);
     case 0:
-        DTRACE("%d: Subprocess created: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
+        DTRACE("%d: Data tranfer subprocess created: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
         DTRACE("%d: Data transfer: connect_fd=%d => mfd=%d\n", getpid(), connect_fd, mfd);
         write_loop(connect_fd, mfd);
         DTRACE("%d: Transfer terminated, exiting\n", getpid());
@@ -154,6 +154,7 @@ int protocol(int connect_fd) {
         DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;
     }
+    DTRACE("%d: Wrote %s", getpid(), rembash);
 
     // read <SECRET>\n 
     if ((nread = read(connect_fd, buff, 4096)) == -1) {
@@ -161,6 +162,7 @@ int protocol(int connect_fd) {
         return -1;
     }
     buff[nread] = '\0';
+    DTRACE("%d: Read %s", getpid(), buff);
 
     if (strcmp(buff, secret) != 0) {
         // write <error>\n
@@ -168,6 +170,7 @@ int protocol(int connect_fd) {
         if (write(connect_fd, error, strlen(error)) == -1) {
             DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
         }
+        DTRACE("%d: Wrote %s", getpid(), error);
         return -1;
     }
 
@@ -176,6 +179,7 @@ int protocol(int connect_fd) {
         DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;
     }
+    DTRACE("%d: Wrote %s", getpid(), ok);
    
     return 0;
 } // end protocol()
@@ -225,15 +229,18 @@ int setuppty(pid_t *pid, int connect_fd) {
     pid_t slavepid;
 
     if ((mfd = posix_openpt(O_RDWR | O_NOCTTY)) == -1) {
+        DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
         return -1;
     }
 
     if (unlockpt(mfd) == -1) {
+        DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
         close(mfd);
         return -1;
     }
 
     if ((slavepointer = ptsname(mfd)) == NULL) {
+        DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
         close(mfd);
         return -1;
     }
@@ -242,6 +249,7 @@ int setuppty(pid_t *pid, int connect_fd) {
     strcpy(sname, slavepointer);
 
     if ((slavepid = fork()) == -1) {
+        DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
         return -1;
     }
 
@@ -251,18 +259,27 @@ int setuppty(pid_t *pid, int connect_fd) {
         return mfd;
     }
    
+    DTRACE("%d: Slave subprocess created: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
+
     // child will never return from this function
     int sfd;
     close(mfd); // child has no need for this
     close(connect_fd);
+    DTRACE("%d: mfd=%d and connect_fd=%d closed\n", getpid(), mfd, connect_fd);
 
     if (setsid() == -1) {
+        DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
         exit(EXIT_FAILURE);
     }
 
     if ((sfd = open(sname, O_RDWR)) == -1) {
+        DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
         exit(EXIT_FAILURE);
     }
+
+    DTRACE("%d: Redirecting stdin/out/err to sfd=%d\n", getpid(), sfd);
+    DTRACE("%d: Closing sfd=%d\n", getpid(), sfd);
+    DTRACE("%d: Execing into bash\n", getpid());
 
     // redirect stdin/stdout/stderr to the pty slave 
     for (int i = 0; i < 3; i++) {
@@ -275,7 +292,7 @@ int setuppty(pid_t *pid, int connect_fd) {
     close(sfd); // no need for this anymore
 
     // exec into bash
-    execlp("bash", "bash", "--noediting", "-i", NULL);
+    execlp("bash", "bash", NULL);
 
     // should only reach here if execlp failed 
     exit(EXIT_FAILURE); 

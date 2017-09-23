@@ -39,7 +39,7 @@ int main(int argc, char *argv[]) {
     struct termios termset;
     struct sigaction act;
     
-    DTRACE("%d: Client staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
+    DTRACE("%d: Client starting: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
 
     /* handle arguments */
     if (argc != 2) {
@@ -111,6 +111,7 @@ int protocol(int sockfd) {
         return -1;
     }
     buff[nread] = '\0';
+    DTRACE("%d: Read %s", getpid(), buff);
 
     if (strcmp(buff, rembash) != 0) {
         DTRACE("%d: invalid protocol from server\n", getpid());
@@ -122,6 +123,7 @@ int protocol(int sockfd) {
         DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;
     }
+    DTRACE("%d: Wrote %s", getpid(), secret);
 
     // read <ok>\n or <error>\n
     if ((nread = read(sockfd, buff, 4096)) == -1) {
@@ -129,6 +131,7 @@ int protocol(int sockfd) {
         return -1;
     }
     buff[nread] = '\0';
+    DTRACE("%d: Read %s", getpid(), buff);
 
     if (strcmp(buff, error) == 0) {
         DTRACE("%d: Invalid secret\n", getpid());
