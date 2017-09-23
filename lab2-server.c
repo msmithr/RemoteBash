@@ -1,4 +1,4 @@
-// CS 407 Lab 02
+// CS 407 Lab 02 - Server
 //
 // Client/server application allowing user to run bash
 // commands on a remote machine, similar to SSH or TELNET
@@ -48,7 +48,10 @@ int main(int argc, char *argv[]) {
     DTRACE("%d: Listening socket fd=%d created\n", getpid(), sockfd);
 
     // children auto collected
-    signal(SIGCHLD, SIG_IGN);
+    if (signal(SIGCHLD, SIG_IGN) == SIG_ERR) {
+        fprintf(stderr, "rembashd: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
 
     /* infinite loop accepting connections */
     while(1) {
@@ -60,7 +63,7 @@ int main(int argc, char *argv[]) {
 
         switch (fork()) {
         case -1: // error; close fd and move on
-            fprintf(stderr, "remcpd: %s\n", strerror(errno));
+            DTRACE("%d: Fork failed to create subprocess\n", getpid());
             close(connect_fd);
             break;
 
@@ -69,10 +72,10 @@ int main(int argc, char *argv[]) {
             close(sockfd); // close listening socket in child
             DTRACE("%d: Listening socket fd=%d closed\n", getpid(), sockfd);
             handle_client(connect_fd);
-            exit(EXIT_FAILURE);
+            exit(EXIT_FAILURE); // should never get here
         
         default: // in parent
-            close(connect_fd); // close connection in parent
+            close(connect_fd); // close this connection, it's unneeded
             DTRACE("%d: Connection fd=%d closed\n", getpid(), connect_fd);
             break;
 
@@ -121,14 +124,14 @@ void handle_client(int connect_fd) {
         DTRACE("%d: Data transfer: connect_fd=%d => mfd=%d\n", getpid(), connect_fd, mfd);
         write_loop(connect_fd, mfd);
         DTRACE("%d: Transfer terminated, exiting\n", getpid());
-        exit(EXIT_FAILURE); // sends sigchld to parent
+        exit(EXIT_SUCCESS); // sends sigchld to parent
     default:
         DTRACE("%d: Data transfer: mfd=%d => connect_fd=%d\n", getpid(), connect_fd, mfd);
         write_loop(mfd, connect_fd);
         DTRACE("%d Tranfer terminated, killing %d and exiting\n", getpid(), wpid);
         kill(wpid, SIGTERM); // kill child
         wait(NULL);
-        exit(EXIT_FAILURE);
+        exit(EXIT_SUCCESS);
     }
 
     exit(EXIT_SUCCESS);
@@ -190,7 +193,9 @@ int setup_server_socket(int port) {
 
     // immediate reuse of port for testing
     int i = 1;
-    setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i));
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i)) == =1) {
+        DTRACE("%d: setsockopt failed\n", getpid());
+    }
 
     struct sockaddr_in servaddr;
     servaddr.sin_family = AF_INET;
