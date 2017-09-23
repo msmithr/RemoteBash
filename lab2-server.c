@@ -277,9 +277,9 @@ int setuppty(pid_t *pid, int connect_fd) {
     // exec into bash
     execlp("bash", "bash", "--noediting", "-i", NULL);
 
-    // should never reach here, just for gcc
+    // should only reach here if execlp failed 
     exit(EXIT_FAILURE); 
-}
+} // end setuppty
 
 // continuously read from fromfd and write to tofd
 void write_loop(int fromfd, int tofd) {
@@ -293,8 +293,9 @@ void write_loop(int fromfd, int tofd) {
         }
     }
     return;
-}
+} // end write_loop
 
+// signal handler for sigchld
 void sigchld_handler(int signum) {
     DTRACE("%d: SIGCHLD handler fired\n", getpid());
     kill(spid, SIGTERM);
@@ -306,4 +307,30 @@ void sigchld_handler(int signum) {
     DTRACE("%d: Processes %d and %d have been terminated and collected\n", getpid(), spid, wpid);
     DTRACE("%d: Terminating self\n", getpid());
     exit(EXIT_SUCCESS);
-}
+} // end sigchld_handler
+                 
+
+//   _____ 
+//  < EOF >
+//   ----- 
+//    \                                  ,+*^^*+___+++_
+//     \                           ,*^^^^              )
+//      \                       _+*                     ^**+_
+//       \                    +^       _ _++*+_+++_,         )
+//                _+^^*+_    (     ,+*^ ^          \+_        )
+//               {       )  (    ,(    ,_+--+--,      ^)      ^\
+//              { (@)    } f   ,(  ,+-^ __*_*_  ^^\_   ^\       )
+//             {:;-/    (_+*-+^^^^^+*+*<_ _++_)_    )    )      /
+//            ( /  (    (        ,___    ^*+_+* )   <    <      \
+//             U _/     )    *--<  ) ^\-----++__)   )    )       )
+//              (      )  _(^)^^))  )  )\^^^^^))^*+/    /       /
+//            (      /  (_))_^)) )  )  ))^^^^^))^^^)__/     +^^
+//           (     ,/    (^))^))  )  ) ))^^^^^^^))^^)       _)
+//            *+__+*       (_))^)  ) ) ))^^^^^^))^^^^^)____*^
+//            \             \_)^)_)) ))^^^^^^^^^^))^^^^)
+//             (_             ^\__^^^^^^^^^^^^))^^^^^^^)
+//               ^\___            ^\__^^^^^^))^^^^^^^^)\\
+//                    ^^^^^\uuu/^^\uuu/^^^^\^\^\^\^\^\^\^\
+//                       ___) >____) >___   ^\_\_\_\_\_\_\)
+//                      ^^^//\\_^^//\\_^       ^(\_\_\_\)
+//                        ^^^ ^^ ^^^ ^
