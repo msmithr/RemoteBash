@@ -22,25 +22,22 @@
 #define PORT 4070
 #define SECRET "cs407rembash"
 
-// continuously read from fromfd and write to tofd
+// must be global so signal handler can reach it
+struct termios saved_termset;
+
+// function prototypes
 void write_loop(int fromfd, int tofd);
-
-// function to create a connection to a tcp server
-// returns the socket file descriptor,
-// -1 on most failures,
-// and -2 if the given ip address is invalid (because inet_aton doesn't set errno)
 int connect_server(char *ip, int port);
-
-// performs client end of the rembash protocol
-// returns 0, or -1 on failure
 int protocol(int sockfd);
+void sigchld_handler(int signum);
 
 int main(int argc, char *argv[]) {
 
     char *ip = argv[1];
     int sockfd;
     pid_t pid;
-    struct termios termset, saved_termset;
+    struct termios termset;
+    struct sigaction act;
     
     DTRACE("DEBUG: Client staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
 
@@ -68,6 +65,10 @@ int main(int argc, char *argv[]) {
     termset.c_lflag &= ~ICANON;
     termset.c_lflag &= ~ECHO;
     tcsetattr(0, TCSAFLUSH, &termset);
+
+    // register signal handler
+    act.sa_handler = sigchld_handler;
+    sigaction(SIGCHLD, &act, NULL);
 
     switch (pid = fork()) {
     case -1: // error
@@ -183,3 +184,10 @@ int connect_server(char *ip, int port) {
 
     return sockfd;
 } // end connect_server()
+
+void sigchld_handler(int signum) {
+    DTRACE("DEBUG: sigchld handler fired\n");
+    wait(NULL); // wait for child
+    tcsetattr(0, TCSAFLUSH, &saved_termset); // reset tty settings
+    exit(EXIT_SUCCESS);
+}

@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <sys/wait.h>
 #include "DTRACE.h"
 #define PORT 4070
 #define SECRET "cs407rembash"
@@ -27,6 +28,9 @@ int setup_server_socket(int port);
 int protocol(int connect_fd);
 int setuppty(pid_t *pid, int connect_fd);
 void write_loop(int fromfd, int tofd);
+void sigchld_handler(int signum);
+
+pid_t spid, wpid;
 
 int main(int argc, char *argv[]) {
 
@@ -79,8 +83,12 @@ int main(int argc, char *argv[]) {
 // performs protocol, redirects stdin, stdout, and stderr, and exec's into bash
 void handle_client(int connect_fd) {
 
-    pid_t spid, wpid;
     int mfd;
+    struct sigaction act;
+    
+    // register signal handler
+    act.sa_handler = sigchld_handler;
+    sigaction(SIGCHLD, &act, NULL);
 
     // perform rembash protocl
     if (protocol(connect_fd) == -1) {
@@ -88,24 +96,21 @@ void handle_client(int connect_fd) {
         exit(EXIT_FAILURE);
     }
 
+    // create the pty
     if ((mfd = setuppty(&spid, connect_fd)) == -1) {
         DTRACE("DEBUG: %s\n", strerror(errno));
-    } // create the pty
+    }
 
     switch (wpid = fork()) {
     case -1:
         exit(EXIT_FAILURE);
     case 0:
         write_loop(connect_fd, mfd);
-        close(connect_fd);
-        close(mfd);
-        kill(getppid(), SIGTERM);
-        exit(EXIT_FAILURE);
+        exit(EXIT_FAILURE); // sends sigchld to parent
     default:
         write_loop(mfd, connect_fd);
-        close(connect_fd);
-        close(mfd);
-        kill(wpid, SIGTERM);
+        kill(wpid, SIGTERM); // kill child
+        wait(NULL);
         exit(EXIT_FAILURE);
     }
 
@@ -269,4 +274,13 @@ void write_loop(int fromfd, int tofd) {
         }
     }
     return;
+}
+
+void sigchld_handler(int signum) {
+    DTRACE("DEBUG: sigchld handler fired\n");
+    kill(spid, SIGTERM);
+    kill(wpid, SIGTERM);
+    wait(NULL);
+    wait(NULL);
+    exit(EXIT_SUCCESS);
 }
