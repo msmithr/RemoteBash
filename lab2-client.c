@@ -43,6 +43,7 @@ int main(int argc, char *argv[]) {
 
     /* handle arguments */
     if (argc != 2) {
+        fprintf(stderr, "rembash: usage: ./rembash <ip address>\n");
         exit(EXIT_FAILURE);
     }
     
@@ -190,6 +191,7 @@ int connect_server(char *ip, int port) {
     return sockfd;
 } // end connect_server()
 
+// sigchld handler, fires whenever child process dies
 void sigchld_handler(int signum) {
     DTRACE("%d: SIGCHLD handler fired, child process has terminated\n", getpid());
     wait(NULL); // wait for child
