@@ -53,6 +53,12 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    // ignore sigpipe
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+        fprintf(stderr, "rembashd: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
     /* infinite loop accepting connections */
     while(1) {
         if ((connect_fd = accept(sockfd, (struct sockaddr *) NULL, NULL)) == -1) {

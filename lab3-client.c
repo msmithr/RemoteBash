@@ -46,7 +46,13 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "rembash: usage: ./rembash <ip address>\n");
         exit(EXIT_FAILURE);
     }
-    
+
+    // ignore sigpipe
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+        fprintf(stderr, "rembashd: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }   
+
     // connect to server
     if ((sockfd = connect_server(ip, PORT)) == -1) {
         fprintf(stderr, "rembash: error occured while attempting to connect to server\n");
