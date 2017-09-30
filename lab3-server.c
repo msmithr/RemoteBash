@@ -36,6 +36,7 @@ int setuppty(pid_t *pid);
 void write_loop(int fromfd, int tofd);
 void sigchld_handler(int signum);
 void *handle_client(void *args);
+void sigalrm_handler(int signum);
 
 // pid's must be stored globally so they can be killed by
 // the signal handler
@@ -119,6 +120,7 @@ int setup() {
         return -1;
     }
 
+
     return sockfd;
 } // end setup()
 
@@ -152,6 +154,28 @@ int protocol(int connect_fd) {
 
     char buff[4096];
     int nread;
+    timer_t timerid;
+    struct itimerspec ts;
+    struct sigaction act;
+
+    // register sigalrm handler
+    act.sa_handler = sigalrm_handler;
+    act.sa_flags = 0;
+    if (sigaction(SIGALRM, &act, NULL) == -1) {
+        DTRACE("%d: %s\n", getpid(), strerror(errno));
+        return -1;
+    }
+
+    // set up timer
+    ts.it_value.tv_sec = 5;
+    if (timer_create(CLOCK_REALTIME, NULL, &timerid) == -1) {
+        DTRACE("%d: %s\n", getpid(), strerror(errno));
+        return -1;
+    }
+    if (timer_settime(timerid, 0, &ts, NULL) == -1) {
+        DTRACE("%d: %s\n", getpid(), strerror(errno));
+        return -1;
+    }
 
     // write <rembash>\n
     if (write(connect_fd, rembash, strlen(rembash)) == -1) {
@@ -185,6 +209,11 @@ int protocol(int connect_fd) {
     }
     DTRACE("%d: Wrote %s", getpid(), ok);
    
+    // disarm the timer
+    if (timer_delete(timerid) == -1) {
+        return -1;
+    }
+    
     return 0;
 } // end protocol()
 
@@ -314,6 +343,10 @@ void sigchld_handler(int signum) {
     DTRACE("%d: Terminating self\n", getpid());
     exit(EXIT_SUCCESS);
 } // end sigchld_handler
+
+void sigalrm_handler(int signum) {
+    DTRACE("sigalrm!\n");
+}
                  
 // function to be called by thread to handle each client
 void *handle_client(void *args) {
@@ -364,6 +397,7 @@ void *handle_client(void *args) {
 
     return NULL;
 }
+
 
 
 
