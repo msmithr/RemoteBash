@@ -156,6 +156,7 @@ int protocol(int connect_fd) {
     int nread;
     timer_t timerid;
     struct itimerspec ts;
+    struct sigevent sev;
     struct sigaction act;
 
     // register sigalrm handler
@@ -168,7 +169,9 @@ int protocol(int connect_fd) {
 
     // set up timer
     ts.it_value.tv_sec = 5;
-    if (timer_create(CLOCK_REALTIME, NULL, &timerid) == -1) {
+    sev.sigev_notify = SIGEV_THREAD_ID;
+    sev.sigev_signo = SIGALRM;
+    if (timer_create(CLOCK_REALTIME, &sev, &timerid) == -1) {
         DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;
     }
