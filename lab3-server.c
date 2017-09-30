@@ -18,15 +18,18 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <sys/epoll.h>
+#include <pthread.h>
 #include "DTRACE.h"
 #define PORT 4070
 #define SECRET "cs407rembash"
+#define MAX_NUM_CLIENTS 10000
 
 // function prototypes
-void handle_client(int connect_fd);
+void *handle_client(void *args);
 int setup_server_socket(int port);
 int protocol(int connect_fd);
-int setuppty(pid_t *pid, int connect_fd);
+int setuppty(pid_t *pid);
 void write_loop(int fromfd, int tofd);
 void sigchld_handler(int signum);
 
@@ -34,11 +37,16 @@ void sigchld_handler(int signum);
 // the signal handler
 pid_t spid, wpid;
 
+int fdmap[(MAX_NUM_CLIENTS * 2) + 5];
+
 int main(int argc, char *argv[]) {
 
     DTRACE("%d: Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
 
-    int connect_fd, sockfd;
+    int connect_fd, sockfd, epfd, *epptr, mfd;
+    struct epoll_event event;
+    pthread_t tid;
+    pid_t ptyfd;
 
     if ((sockfd = setup_server_socket(PORT)) == -1) {
         fprintf(stderr, "rembashd: %s\n", strerror(errno));
@@ -59,33 +67,70 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    // create epoll
+    if ((epfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
+        fprintf(stderr, "rembashd: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+    // store epfd into malloc'd memory to pass to thread
+    if ((epptr = malloc(sizeof(int))) == NULL) {
+        fprintf(stderr, "rembashd: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    *epptr = epfd;
+
+    // create the thread
+    if (pthread_create(&tid, NULL, handle_client, epptr) != 0) {
+        fprintf(stderr, "rembashd: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
     /* infinite loop accepting connections */
     while(1) {
         if ((connect_fd = accept(sockfd, (struct sockaddr *) NULL, NULL)) == -1) {
             continue; // if accept failed, continue to next iteration
         }
         
+        // set close on exec on the connection
+        fcntl(connect_fd, F_SETFD, FD_CLOEXEC);
+
         DTRACE("%d: Connection fd=%d accepted\n", getpid(), connect_fd);
 
-        switch (fork()) {
-        case -1: // error; close fd and move on
-            DTRACE("%d: Fork failed to create subprocess\n", getpid());
+        if (protocol(connect_fd) == -1) {
             close(connect_fd);
-            break;
+            continue;
+        }
 
-        case 0: // in child
-            DTRACE("%d: Client handler subprocess created: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
-            close(sockfd); // close listening socket in child
-            DTRACE("%d: Listening socket fd=%d closed\n", getpid(), sockfd);
-            handle_client(connect_fd);
-            exit(EXIT_FAILURE); // should never get here
+        // add connection to epoll
+        event.data.fd = connect_fd;
+        event.events = EPOLLIN;
+        if (epoll_ctl(epfd, EPOLL_CTL_ADD, connect_fd, &event) == -1) {
+            DTRACE("%d: Failed to add fd=%d to epoll, closing %d\n", getpid(), connect_fd, connect_fd);
+            close(connect_fd);
+            continue;
+        }
         
-        default: // in parent
-            close(connect_fd); // close this connection, it's unneeded
-            DTRACE("%d: Connection fd=%d closed\n", getpid(), connect_fd);
-            break;
+        DTRACE("%d: fd=%d added to epoll\n", getpid(), connect_fd);
 
-        } // end switch/case
+        // create pty
+        if ((mfd = setuppty(&ptyfd)) == -1) {
+            close(connect_fd);
+            continue;
+        }
+
+        // add mfd to epoll
+        event.data.fd = mfd;
+        if (epoll_ctl(epfd, EPOLL_CTL_ADD, mfd, &event) == -1) {
+            DTRACE("%d: Failed to add fd=%d to epoll, closing %d\n", getpid(), mfd, mfd);
+            close(connect_fd);
+            close(mfd);
+            continue;
+        }
+        DTRACE("%d: fd=%d added to epoll\n", getpid(), mfd);
+
+        fdmap[connect_fd] = mfd;
+        fdmap[mfd] = connect_fd;
 
     } // end while
 
@@ -95,53 +140,28 @@ int main(int argc, char *argv[]) {
 } // end main()
 
 
-// function to be called be the child processes
+// function to be called be the thread 
 // handles each client given the file descriptor 
 // performs protocol, redirects stdin, stdout, and stderr, and exec's into bash
-void handle_client(int connect_fd) {
+void *handle_client(void *args) {
+    int epfd = *(int*)args;
+    free(args);
 
-    int mfd;
-    struct sigaction act;
-    
-    // register signal handler
-    act.sa_handler = sigchld_handler;
-    sigaction(SIGCHLD, &act, NULL);
+    int ready_fd, nread;
+    struct epoll_event evlist[MAX_NUM_CLIENTS];
+    char buff[4096];
 
-    // perform rembash protocl
-    if (protocol(connect_fd) == -1) {
-        // errors in the protocol are DTRACE'd out within the function 
-        exit(EXIT_FAILURE);
+    while (1) {
+        ready_fd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS, -1);
+        for (int i = 0; i < ready_fd; i++) {
+            nread = read(evlist[i].data.fd, buff, 4096);
+            buff[nread] = '\0';
+            write(fdmap[evlist[i].data.fd], buff, strlen(buff));
+        }
     }
 
-    DTRACE("%d: Protocol successful\n", getpid());
-
-    // create the pty
-    if ((mfd = setuppty(&spid, connect_fd)) == -1) {
-        DTRACE("%d: %s\n", getpid(), strerror(errno));
-    }
-
-    DTRACE("%d: PTY Created: mfd=%d, spid=%d\n", getpid(), mfd, spid);
-
-    switch (wpid = fork()) {
-    case -1:
-        exit(EXIT_FAILURE);
-    case 0:
-        DTRACE("%d: Data tranfer subprocess created: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
-        DTRACE("%d: Data transfer: connect_fd=%d => mfd=%d\n", getpid(), connect_fd, mfd);
-        write_loop(connect_fd, mfd);
-        DTRACE("%d: Transfer terminated, exiting\n", getpid());
-        exit(EXIT_SUCCESS); // sends sigchld to parent
-    default:
-        DTRACE("%d: Data transfer: mfd=%d => connect_fd=%d\n", getpid(), connect_fd, mfd);
-        write_loop(mfd, connect_fd);
-        DTRACE("%d Tranfer terminated, killing %d and exiting\n", getpid(), wpid);
-        kill(wpid, SIGTERM); // kill child
-        wait(NULL);
-        exit(EXIT_SUCCESS);
-    }
-
-    exit(EXIT_SUCCESS);
-} // end handle_client()
+    return NULL;
+}
 
 // performs the server end of the rembash protocol
 // returns 0, or -1 on failure
@@ -229,7 +249,7 @@ int setup_server_socket(int port) {
 // creates and sets up the psuedoterminal master/slave
 // returns master fd, and stores subprocess pid in pointer
 // returns -1 on failure
-int setuppty(pid_t *pid, int connect_fd) {
+int setuppty(pid_t *pid) {
     int mfd;
     char *slavepointer;
     pid_t slavepid;
@@ -270,8 +290,6 @@ int setuppty(pid_t *pid, int connect_fd) {
     // child will never return from this function
     int sfd;
     close(mfd); // child has no need for this
-    close(connect_fd);
-    DTRACE("%d: mfd=%d and connect_fd=%d closed\n", getpid(), mfd, connect_fd);
 
     if (setsid() == -1) {
         DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
@@ -303,20 +321,6 @@ int setuppty(pid_t *pid, int connect_fd) {
     // should only reach here if execlp failed 
     exit(EXIT_FAILURE); 
 } // end setuppty
-
-// continuously read from fromfd and write to tofd
-void write_loop(int fromfd, int tofd) {
-    char buff[4096];
-    int nread;
-
-    while ((nread = read(fromfd, buff, 4096)) > 0) {
-        buff[nread] = '\0';
-        if (write(tofd, buff, strlen(buff)) == -1) {
-            return;
-        }
-    }
-    return;
-} // end write_loop
 
 // signal handler for sigchld
 void sigchld_handler(int signum) {
