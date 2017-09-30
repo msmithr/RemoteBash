@@ -49,7 +49,7 @@ int main(int argc, char *argv[]) {
 
     // ignore sigpipe
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
-        fprintf(stderr, "rembashd: %s\n", strerror(errno));
+        fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }   
 

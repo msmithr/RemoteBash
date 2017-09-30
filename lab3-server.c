@@ -8,6 +8,7 @@
 // author: Michael Smith
 
 #define _XOPEN_SOURCE 600
+#define _POSIX_C_SOURCE 199309L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,68 +21,37 @@
 #include <sys/wait.h>
 #include <sys/epoll.h>
 #include <pthread.h>
+#include <time.h>
 #include "DTRACE.h"
 #define PORT 4070
 #define SECRET "cs407rembash"
 #define MAX_NUM_CLIENTS 10000
 
 // function prototypes
-void *handle_client(void *args);
+int setup();
+void *epoll_loop(void *args);
 int setup_server_socket(int port);
 int protocol(int connect_fd);
 int setuppty(pid_t *pid);
 void write_loop(int fromfd, int tofd);
 void sigchld_handler(int signum);
+void *handle_client(void *args);
 
 // pid's must be stored globally so they can be killed by
 // the signal handler
 pid_t spid, wpid;
-
+int epfd;
 int fdmap[(MAX_NUM_CLIENTS * 2) + 5];
 
 int main(int argc, char *argv[]) {
 
     DTRACE("%d: Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
 
-    int connect_fd, sockfd, epfd, *epptr, mfd;
-    struct epoll_event event;
-    pthread_t tid;
-    pid_t ptyfd;
+    int connect_fd, sockfd, *connect_fd_ptr;
+    pthread_t clienttid;
 
-    if ((sockfd = setup_server_socket(PORT)) == -1) {
-        fprintf(stderr, "rembashd: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-
-    DTRACE("%d: Listening socket fd=%d created\n", getpid(), sockfd);
-
-    // children auto collected
-    if (signal(SIGCHLD, SIG_IGN) == SIG_ERR) {
-        fprintf(stderr, "rembashd: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-
-    // ignore sigpipe
-    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
-        fprintf(stderr, "rembashd: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-
-    // create epoll
-    if ((epfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
-        fprintf(stderr, "rembashd: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-
-    // store epfd into malloc'd memory to pass to thread
-    if ((epptr = malloc(sizeof(int))) == NULL) {
-        fprintf(stderr, "rembashd: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-    *epptr = epfd;
-
-    // create the thread
-    if (pthread_create(&tid, NULL, handle_client, epptr) != 0) {
+    // generic setup
+    if ((sockfd = setup()) == -1) {
         fprintf(stderr, "rembashd: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
@@ -91,46 +61,20 @@ int main(int argc, char *argv[]) {
         if ((connect_fd = accept(sockfd, (struct sockaddr *) NULL, NULL)) == -1) {
             continue; // if accept failed, continue to next iteration
         }
-        
-        // set close on exec on the connection
-        fcntl(connect_fd, F_SETFD, FD_CLOEXEC);
 
         DTRACE("%d: Connection fd=%d accepted\n", getpid(), connect_fd);
-
-        if (protocol(connect_fd) == -1) {
-            close(connect_fd);
-            continue;
-        }
-
-        // add connection to epoll
-        event.data.fd = connect_fd;
-        event.events = EPOLLIN;
-        if (epoll_ctl(epfd, EPOLL_CTL_ADD, connect_fd, &event) == -1) {
-            DTRACE("%d: Failed to add fd=%d to epoll, closing %d\n", getpid(), connect_fd, connect_fd);
-            close(connect_fd);
-            continue;
-        }
         
-        DTRACE("%d: fd=%d added to epoll\n", getpid(), connect_fd);
-
-        // create pty
-        if ((mfd = setuppty(&ptyfd)) == -1) {
+        // store connect_fd in malloc'd memory to pass to thread
+        if ((connect_fd_ptr = malloc(sizeof(int))) == NULL) {
             close(connect_fd);
             continue;
         }
+        *connect_fd_ptr = connect_fd;
 
-        // add mfd to epoll
-        event.data.fd = mfd;
-        if (epoll_ctl(epfd, EPOLL_CTL_ADD, mfd, &event) == -1) {
-            DTRACE("%d: Failed to add fd=%d to epoll, closing %d\n", getpid(), mfd, mfd);
+        if (pthread_create(&clienttid, NULL, handle_client, connect_fd_ptr) != 0) {
             close(connect_fd);
-            close(mfd);
             continue;
         }
-        DTRACE("%d: fd=%d added to epoll\n", getpid(), mfd);
-
-        fdmap[connect_fd] = mfd;
-        fdmap[mfd] = connect_fd;
 
     } // end while
 
@@ -139,14 +83,48 @@ int main(int argc, char *argv[]) {
 
 } // end main()
 
+// generic setup for the server
+// returns listening socket fd, or -1 on failure
+int setup() {
+    int sockfd;
+    pthread_t iothread;
+
+    // set up the server socket
+    if ((sockfd = setup_server_socket(PORT)) == -1) {
+        return -1;
+    }
+
+    // set close on exec on listening server
+    fcntl(sockfd, F_SETFD, FD_CLOEXEC);
+
+    DTRACE("%d: Listening socket fd=%d created\n", getpid(), sockfd);
+
+    // ignore SIGCHLD 
+    if (signal(SIGCHLD, SIG_IGN) == SIG_ERR) {
+        return -1; 
+    }
+
+    // ignore SIGPIPE
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+        return -1; 
+    }
+
+    // create epoll
+    if ((epfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
+        return -1; 
+    }
+
+    // create the I/O thread
+    if (pthread_create(&iothread, NULL, epoll_loop, NULL) != 0) {
+        return -1;
+    }
+
+    return sockfd;
+} // end setup()
 
 // function to be called be the thread 
-// handles each client given the file descriptor 
-// performs protocol, redirects stdin, stdout, and stderr, and exec's into bash
-void *handle_client(void *args) {
-    int epfd = *(int*)args;
-    free(args);
-
+// handles I/O using epoll
+void *epoll_loop(void *args) {
     int ready_fd, nread;
     struct epoll_event evlist[MAX_NUM_CLIENTS];
     char buff[4096];
@@ -259,6 +237,8 @@ int setuppty(pid_t *pid) {
         return -1;
     }
 
+    fcntl(mfd, F_SETFD, FD_CLOEXEC);
+
     if (unlockpt(mfd) == -1) {
         DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
         close(mfd);
@@ -289,7 +269,6 @@ int setuppty(pid_t *pid) {
 
     // child will never return from this function
     int sfd;
-    close(mfd); // child has no need for this
 
     if (setsid() == -1) {
         DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
@@ -336,6 +315,57 @@ void sigchld_handler(int signum) {
     exit(EXIT_SUCCESS);
 } // end sigchld_handler
                  
+// function to be called by thread to handle each client
+void *handle_client(void *args) {
+    struct epoll_event event;   
+    int mfd, connect_fd;
+    pid_t ptyfd;
+
+    connect_fd = *(int*)args;
+    free(args);
+
+    // set close on exec on the connection
+    fcntl(connect_fd, F_SETFD, FD_CLOEXEC);
+
+    if (protocol(connect_fd) == -1) {
+        close(connect_fd);
+        return NULL;
+    }
+
+    // add connection to epoll
+    event.data.fd = connect_fd;
+    event.events = EPOLLIN;
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, connect_fd, &event) == -1) {
+        DTRACE("%d: Failed to add fd=%d to epoll, closing %d\n", getpid(), connect_fd, connect_fd);
+        close(connect_fd);
+        return NULL;
+    }
+
+    DTRACE("%d: fd=%d added to epoll\n", getpid(), connect_fd);
+
+    // create pty
+    if ((mfd = setuppty(&ptyfd)) == -1) {
+        close(connect_fd);
+        return NULL;
+    }
+
+    // add mfd to epoll
+    event.data.fd = mfd;
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, mfd, &event) == -1) {
+        DTRACE("%d: Failed to add fd=%d to epoll, closing %d\n", getpid(), mfd, mfd);
+        close(connect_fd);
+        close(mfd);
+        return NULL;
+    }
+    DTRACE("%d: fd=%d added to epoll\n", getpid(), mfd);
+
+    fdmap[connect_fd] = mfd;
+    fdmap[mfd] = connect_fd;
+
+    return NULL;
+}
+
+
 
 //   _____ 
 //  < EOF >
