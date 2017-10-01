@@ -9,6 +9,7 @@
 
 #define _XOPEN_SOURCE 600
 #define _POSIX_C_SOURCE 199309L
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,7 @@
 #include <sys/epoll.h>
 #include <pthread.h>
 #include <time.h>
+#include <sys/syscall.h>
 #include "DTRACE.h"
 #define PORT 4070
 #define SECRET "cs407rembash"
@@ -33,10 +35,9 @@ void *epoll_loop(void *args);
 int setup_server_socket(int port);
 int protocol(int connect_fd);
 int setuppty(pid_t *pid);
-void write_loop(int fromfd, int tofd);
 void sigchld_handler(int signum);
 void *handle_client(void *args);
-void sigalrm_handler(union sigval value);
+void sigalrm_handler(int signum);
 
 // pid's must be stored globally so they can be killed by
 // the signal handler
@@ -89,6 +90,7 @@ int main(int argc, char *argv[]) {
 int setup() {
     int sockfd;
     pthread_t iothread;
+    struct sigaction act;
 
     // set up the server socket
     if ((sockfd = setup_server_socket(PORT)) == -1) {
@@ -109,6 +111,19 @@ int setup() {
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
         return -1; 
     }
+
+    act.sa_handler = sigalrm_handler;
+    act.sa_flags = 0;
+    if (sigaction(SIGALRM, &act, NULL) == -1) {
+        return -1;
+    }
+
+    /*
+    // ignore SIGALRM
+    if (signal(SIGALRM, SIG_IGN) == SIG_ERR) {
+        return -1;
+    }
+    */
 
     // create epoll
     if ((epfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
@@ -134,9 +149,18 @@ void *epoll_loop(void *args) {
     while (1) {
         ready_fd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS, -1);
         for (int i = 0; i < ready_fd; i++) {
-            nread = read(evlist[i].data.fd, buff, 4096);
+            if ((nread = read(evlist[i].data.fd, buff, 4096)) == -1) {
+                DTRACE("%d: Read from %d failed, closing it and %d\n", getpid(), evlist[i].data.fd, fdmap[evlist[i].data.fd]);
+                close(evlist[i].data.fd);
+                close(fdmap[evlist[i].data.fd]);
+                continue;
+            }
             buff[nread] = '\0';
-            write(fdmap[evlist[i].data.fd], buff, strlen(buff));
+            if (write(fdmap[evlist[i].data.fd], buff, strlen(buff)) == -1) {
+                DTRACE("%d: Write to %d failed, closing it and %d\n", getpid(), fdmap[evlist[i].data.fd], evlist[i].data.fd);
+                close(evlist[i].data.fd);
+                close(fdmap[evlist[i].data.fd]);
+            }
         }
     }
 
@@ -162,8 +186,7 @@ int protocol(int connect_fd) {
     ts.it_value.tv_sec = 5;
     sev.sigev_notify = SIGEV_THREAD_ID;
     sev.sigev_signo = SIGALRM;
-    sev.sigev_value.sival_ptr = &timerid;
-    sev.sigev_notify_function = sigalrm_handler;
+    sev._sigev_un._tid = syscall(__NR_gettid);
 
     if (timer_create(CLOCK_REALTIME, &sev, &timerid) == -1) {
         DTRACE("%d: %s\n", getpid(), strerror(errno));
@@ -341,8 +364,9 @@ void sigchld_handler(int signum) {
     exit(EXIT_SUCCESS);
 } // end sigchld_handler
 
-void sigalrm_handler(union sigval value) {
-    DTRACE("sigalrm!\n");
+// signal handler for sigalrm
+void sigalrm_handler(int signum) {
+    DTRACE("%d: SIGALRM handler fired\n", getpid());
 }
                  
 // function to be called by thread to handle each client
@@ -354,11 +378,15 @@ void *handle_client(void *args) {
     connect_fd = *(int*)args;
     free(args);
 
+    DTRACE("%d: Client handler thread created for fd=%d\n", getpid(), connect_fd);
+
     // set close on exec on the connection
     fcntl(connect_fd, F_SETFD, FD_CLOEXEC);
 
     if (protocol(connect_fd) == -1) {
         close(connect_fd);
+        DTRACE("%d: Protocol unsuccessful for fd=%d\n", getpid(), connect_fd);
+        DTRACE("%d: fd=%d closed, client handler thread killed\n", getpid(), connect_fd);
         return NULL;
     }
 
@@ -367,6 +395,7 @@ void *handle_client(void *args) {
     event.events = EPOLLIN;
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, connect_fd, &event) == -1) {
         DTRACE("%d: Failed to add fd=%d to epoll, closing %d\n", getpid(), connect_fd, connect_fd);
+        DTRACE("%d: fd=%d closed, client handler thread killed\n", getpid(), connect_fd);
         close(connect_fd);
         return NULL;
     }
@@ -376,6 +405,7 @@ void *handle_client(void *args) {
     // create pty
     if ((mfd = setuppty(&ptyfd)) == -1) {
         close(connect_fd);
+        DTRACE("%d: fd=%d closed, client handler thread killed\n", getpid(), connect_fd);
         return NULL;
     }
 
@@ -392,6 +422,7 @@ void *handle_client(void *args) {
     fdmap[connect_fd] = mfd;
     fdmap[mfd] = connect_fd;
 
+    DTRACE("%d: Killing client handler thread for %d\n", getpid(), connect_fd);
     return NULL;
 }
 
