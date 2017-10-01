@@ -36,7 +36,7 @@ int setuppty(pid_t *pid);
 void write_loop(int fromfd, int tofd);
 void sigchld_handler(int signum);
 void *handle_client(void *args);
-void sigalrm_handler(int signum);
+void sigalrm_handler(union sigval value);
 
 // pid's must be stored globally so they can be killed by
 // the signal handler
@@ -157,20 +157,14 @@ int protocol(int connect_fd) {
     timer_t timerid;
     struct itimerspec ts;
     struct sigevent sev;
-    struct sigaction act;
-
-    // register sigalrm handler
-    act.sa_handler = sigalrm_handler;
-    act.sa_flags = 0;
-    if (sigaction(SIGALRM, &act, NULL) == -1) {
-        DTRACE("%d: %s\n", getpid(), strerror(errno));
-        return -1;
-    }
 
     // set up timer
     ts.it_value.tv_sec = 5;
     sev.sigev_notify = SIGEV_THREAD_ID;
     sev.sigev_signo = SIGALRM;
+    sev.sigev_value.sival_ptr = &timerid;
+    sev.sigev_notify_function = sigalrm_handler;
+
     if (timer_create(CLOCK_REALTIME, &sev, &timerid) == -1) {
         DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;
@@ -347,7 +341,7 @@ void sigchld_handler(int signum) {
     exit(EXIT_SUCCESS);
 } // end sigchld_handler
 
-void sigalrm_handler(int signum) {
+void sigalrm_handler(union sigval value) {
     DTRACE("sigalrm!\n");
 }
                  
