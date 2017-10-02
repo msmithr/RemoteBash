@@ -118,13 +118,6 @@ int setup() {
         return -1;
     }
 
-    /*
-    // ignore SIGALRM
-    if (signal(SIGALRM, SIG_IGN) == SIG_ERR) {
-        return -1;
-    }
-    */
-
     // create epoll
     if ((epfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
         return -1; 
