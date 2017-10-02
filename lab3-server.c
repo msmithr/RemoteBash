@@ -28,6 +28,7 @@
 #define PORT 4070
 #define SECRET "cs407rembash"
 #define MAX_NUM_CLIENTS 10000
+#define TIMEOUT 30
 
 // function prototypes
 int setup();
@@ -176,7 +177,7 @@ int protocol(int connect_fd) {
     struct sigevent sev;
 
     // set up timer
-    ts.it_value.tv_sec = 5;
+    ts.it_value.tv_sec = TIMEOUT;
     sev.sigev_notify = SIGEV_THREAD_ID;
     sev.sigev_signo = SIGALRM;
     sev._sigev_un._tid = syscall(__NR_gettid);

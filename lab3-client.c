@@ -6,6 +6,11 @@
 // Client usage: ./rembash <ip address>
 //
 // author: Michael Smith
+//
+// TODO: refactor
+// tty_settings.c_cc[VMIN] = 1
+// tty_settings.c_cc[VTIME] = 0
+// shallow copy of termios
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -202,7 +207,7 @@ void sigchld_handler(int signum) {
     DTRACE("%d: SIGCHLD handler fired, child process has terminated\n", getpid());
     wait(NULL); // wait for child
     tcsetattr(0, TCSAFLUSH, &saved_termset); // reset tty settings
-    exit(EXIT_SUCCESS);
+    _exit(EXIT_SUCCESS);
 }
 
 
