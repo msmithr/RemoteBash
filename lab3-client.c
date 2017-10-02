@@ -11,6 +11,7 @@
 // tty_settings.c_cc[VMIN] = 1
 // tty_settings.c_cc[VTIME] = 0
 // shallow copy of termios
+// actually return success/failure, such as sigchld handler
 
 #include <stdio.h>
 #include <stdlib.h>
