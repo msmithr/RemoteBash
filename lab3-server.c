@@ -40,9 +40,7 @@ int setuppty(pid_t *pid);
 void *handle_client(void *args);
 void sigalrm_handler(int signum);
 
-// pid's must be stored globally so they can be killed by
-// the signal handler
-pid_t spid, wpid;
+// global variables
 int epfd;
 int fdmap[(MAX_NUM_CLIENTS * 2) + 5];
 
@@ -99,7 +97,9 @@ int setup() {
     }
 
     // set close on exec on listening server
-    fcntl(sockfd, F_SETFD, FD_CLOEXEC);
+    if (fcntl(sockfd, F_SETFD, FD_CLOEXEC) == -1) {
+        return -1
+    }
 
     DTRACE("%d: Listening socket fd=%d created\n", getpid(), sockfd);
 
@@ -135,6 +135,8 @@ int setup() {
 
 // function to be called be the thread 
 // handles I/O using epoll
+// TODO: check for EPOLLERR, EPOLLHUP, EPOLLRDHUP
+// and for EPOLLIN
 void *epoll_loop(void *args) {
     int ready_fd, nread;
     struct epoll_event evlist[MAX_NUM_CLIENTS];
@@ -143,6 +145,7 @@ void *epoll_loop(void *args) {
     while (1) {
         ready_fd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS, -1);
         for (int i = 0; i < ready_fd; i++) {
+            //if (evlist[i].events & EPOLLERR | EPOLLHUP | EPOLLRDHUP) { error }
             if ((nread = read(evlist[i].data.fd, buff, 4096)) <= 0) {
                 DTRACE("%d: Read from %d failed, closing it and %d\n", getpid(), evlist[i].data.fd, fdmap[evlist[i].data.fd]);
                 close(evlist[i].data.fd);
@@ -208,9 +211,9 @@ int protocol(int connect_fd) {
 
     if (strcmp(buff, secret) != 0) {
         // write <error>\n
-        DTRACE("%d: remcpd: invalid secret from client\n", getpid()); 
+        DTRACE("%d: rembashd: invalid secret from client\n", getpid()); 
         if (write(connect_fd, error, strlen(error)) == -1) {
-            DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
+            DTRACE("%d: rembashd: %s\n", getpid(), strerror(errno));
         }
         DTRACE("%d: Wrote %s", getpid(), error);
         return -1;
@@ -276,20 +279,23 @@ int setuppty(pid_t *pid) {
     pid_t slavepid;
 
     if ((mfd = posix_openpt(O_RDWR | O_NOCTTY)) == -1) {
-        DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
+        DTRACE("%d: rembashd: %s\n", getpid(), strerror(errno));
         return -1;
     }
 
-    fcntl(mfd, F_SETFD, FD_CLOEXEC);
+    if (fcntl(mfd, F_SETFD, FD_CLOEXEC) == -1) {
+        DTRACE("%d: rembashd: %s\n", getpid(), strerror(errno));
+        return -1;
+    }
 
     if (unlockpt(mfd) == -1) {
-        DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
+        DTRACE("%d: rembashd: %s\n", getpid(), strerror(errno));
         close(mfd);
         return -1;
     }
 
     if ((slavepointer = ptsname(mfd)) == NULL) {
-        DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
+        DTRACE("%d: rembashd: %s\n", getpid(), strerror(errno));
         close(mfd);
         return -1;
     }
@@ -298,7 +304,7 @@ int setuppty(pid_t *pid) {
     strcpy(sname, slavepointer);
 
     if ((slavepid = fork()) == -1) {
-        DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
+        DTRACE("%d: rembashd: %s\n", getpid(), strerror(errno));
         return -1;
     }
 
@@ -314,12 +320,12 @@ int setuppty(pid_t *pid) {
     int sfd;
 
     if (setsid() == -1) {
-        DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
+        DTRACE("%d: rembashd: %s\n", getpid(), strerror(errno));
         exit(EXIT_FAILURE);
     }
 
     if ((sfd = open(sname, O_RDWR)) == -1) {
-        DTRACE("%d: remcpd: %s\n", getpid(), strerror(errno));
+        DTRACE("%d: rembashd: %s\n", getpid(), strerror(errno));
         exit(EXIT_FAILURE);
     }
 

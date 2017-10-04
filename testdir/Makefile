@@ -19,7 +19,7 @@ server:
 	gcc -Wall -std=gnu99 -orembashd -pthread -lrt lab3-server.c
 
 clean:
-	rm rembash rembashd
+	rm rembash* rembashd*
 
 bad:
 	gcc -DDEBUG -Wall -std=gnu99 -orembash-badsecret lab3-client-badsecret.c
