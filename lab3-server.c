@@ -36,7 +36,6 @@ void *epoll_loop(void *args);
 int setup_server_socket(int port);
 int protocol(int connect_fd);
 int setuppty(pid_t *pid);
-void sigchld_handler(int signum);
 void *handle_client(void *args);
 void sigalrm_handler(int signum);
 
@@ -143,7 +142,7 @@ void *epoll_loop(void *args) {
     while (1) {
         ready_fd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS, -1);
         for (int i = 0; i < ready_fd; i++) {
-            if ((nread = read(evlist[i].data.fd, buff, 4096)) == -1) {
+            if ((nread = read(evlist[i].data.fd, buff, 4096)) <= 0) {
                 DTRACE("%d: Read from %d failed, closing it and %d\n", getpid(), evlist[i].data.fd, fdmap[evlist[i].data.fd]);
                 close(evlist[i].data.fd);
                 close(fdmap[evlist[i].data.fd]);
@@ -343,20 +342,6 @@ int setuppty(pid_t *pid) {
     // should only reach here if execlp failed 
     exit(EXIT_FAILURE); 
 } // end setuppty
-
-// signal handler for sigchld
-void sigchld_handler(int signum) {
-    DTRACE("%d: SIGCHLD handler fired\n", getpid());
-    kill(spid, SIGTERM);
-    kill(wpid, SIGTERM);
-
-    // both children are now dead, so collect them
-    while (waitpid(-1, NULL, WNOHANG) > 0);
-
-    DTRACE("%d: Processes %d and %d have been terminated and collected\n", getpid(), spid, wpid);
-    DTRACE("%d: Terminating self\n", getpid());
-    exit(EXIT_SUCCESS);
-} // end sigchld_handler
 
 // signal handler for sigalrm
 void sigalrm_handler(int signum) {

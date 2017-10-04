@@ -6,12 +6,6 @@
 // Client usage: ./rembash <ip address>
 //
 // author: Michael Smith
-//
-// TODO: refactor
-// tty_settings.c_cc[VMIN] = 1
-// tty_settings.c_cc[VTIME] = 0
-// shallow copy of termios
-// actually return success/failure, such as sigchld handler
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,14 +30,14 @@ void write_loop(int fromfd, int tofd);
 int connect_server(char *ip, int port);
 int protocol(int sockfd);
 void sigchld_handler(int signum);
+int setup(char *ip, int port);
 
 int main(int argc, char *argv[]) {
 
     char *ip = argv[1];
     int sockfd;
     pid_t pid;
-    struct termios termset;
-    struct sigaction act;
+   
     
     DTRACE("%d: Client starting: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
 
@@ -53,34 +47,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    // ignore sigpipe
-    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
-        fprintf(stderr, "rembash: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }   
-
-    // connect to server
-    if ((sockfd = connect_server(ip, PORT)) == -1) {
-        fprintf(stderr, "rembash: error occured while attempting to connect to server\n");
-        exit(EXIT_FAILURE);
-    }
-
-    // perform protocol
-    if (protocol(sockfd) == -1) {
-        fprintf(stderr, "rembash: error during rembash protocol\n");
-        exit(EXIT_FAILURE);
-    }
-
-    // set pty to noncanonical mode
-    tcgetattr(0, &termset);
-    saved_termset = termset; // save tty settings
-    termset.c_lflag &= ~ICANON;
-    termset.c_lflag &= ~ECHO;
-    tcsetattr(0, TCSAFLUSH, &termset);
-
-    // register signal handler
-    act.sa_handler = sigchld_handler;
-    if (sigaction(SIGCHLD, &act, NULL) == -1) {
+    if ((sockfd = setup(ip, PORT)) == -1) {
         fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
@@ -104,6 +71,51 @@ int main(int argc, char *argv[]) {
     exit(EXIT_SUCCESS);
 
 } // end main()
+
+// generic setup for client
+// returns the connection fd, or -1 on failure
+int setup(char *ip, int port) {
+    struct sigaction act;
+    struct termios termset;
+    int sockfd;
+
+    // ignore sigpipe
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+        return -1;
+    }   
+
+    // connect to server
+    if ((sockfd = connect_server(ip, PORT)) == -1) {
+        return -1;
+    }    
+
+    // perform protocol
+    if (protocol(sockfd) == -1) {
+        return -1;
+    }
+
+    // set pty to noncanonical mode
+    if (tcgetattr(0, &termset) == -1) {
+        return -1;
+    }
+
+    saved_termset = termset; // save tty settings
+    termset.c_lflag &= ~ICANON;
+    termset.c_lflag &= ~ECHO;
+    termset.c_cc[VMIN] = 1;
+    termset.c_cc[VTIME] = 0;
+    if (tcsetattr(0, TCSAFLUSH, &termset) == -1) {
+        return -1;
+    }
+
+    // register signal handler
+    act.sa_handler = sigchld_handler;
+    if (sigaction(SIGCHLD, &act, NULL) == -1) {
+        return -1;
+    }
+
+    return sockfd;
+} // end setup()
 
 // performs client end of the rembash protocol
 // returns 0, or -1 on failure
@@ -205,9 +217,24 @@ int connect_server(char *ip, int port) {
 
 // sigchld handler, fires whenever child process dies
 void sigchld_handler(int signum) {
+    int status;
+
     DTRACE("%d: SIGCHLD handler fired, child process has terminated\n", getpid());
-    wait(NULL); // wait for child
-    tcsetattr(0, TCSAFLUSH, &saved_termset); // reset tty settings
+
+    wait(&status); // wait for child
+
+    // restore tty attributes
+    if (tcsetattr(0, TCSAFLUSH, &saved_termset) == -1) {
+        fprintf(stderr, "%s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    
+    // if the child process failed, exit failure
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != EXIT_SUCCESS) {
+        _exit(EXIT_FAILURE);
+    }
+
+    // terminate
     _exit(EXIT_SUCCESS);
 }
 
