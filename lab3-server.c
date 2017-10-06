@@ -7,6 +7,9 @@
 //
 // author: Michael Smith
 // TODO: NonBlocking
+// TODO: Pthread_self or gettid() ??
+// TODO: pthread_detach()
+// TODO: Test EPOLLIN changes etc
 
 #define _XOPEN_SOURCE 600
 #define _POSIX_C_SOURCE 199309L
@@ -113,6 +116,7 @@ int setup() {
         return -1; 
     }
 
+    // register sigalrm handler
     act.sa_handler = sigalrm_handler;
     act.sa_flags = 0;
     if (sigaction(SIGALRM, &act, NULL) == -1) {
@@ -135,34 +139,48 @@ int setup() {
 
 // function to be called be the thread 
 // handles I/O using epoll
-// TODO: check for EPOLLERR, EPOLLHUP, EPOLLRDHUP
-// and for EPOLLIN
+// TODO: and for EPOLLIN
+// TODO: Test this!
 void *epoll_loop(void *args) {
     int ready_fd, nread;
     struct epoll_event evlist[MAX_NUM_CLIENTS];
     char buff[4096];
 
+    // infinite epoll_wait loop
     while (1) {
-        ready_fd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS, -1);
+        if (ready_fd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS, -1) == -1) {
+            DTRACE("%d: %s\n", getpid(), strerror(errno));
+            return NULL;
+        }
+
         for (int i = 0; i < ready_fd; i++) {
-            //if (evlist[i].events & EPOLLERR | EPOLLHUP | EPOLLRDHUP) { error }
+            // event is an error
+            if (evlist[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+                DTRACE("%d: Error on fd=%d\n, closing it and %d\n", getpid(), evlist[i].data.fd, fdmap[evlist[i].data.fd]);
+                close(evlist[i].data.fd);
+                close(fdmap[evlist[i].data.fd]);
+            }
+
+            // read from fd
             if ((nread = read(evlist[i].data.fd, buff, 4096)) <= 0) {
                 DTRACE("%d: Read from %d failed, closing it and %d\n", getpid(), evlist[i].data.fd, fdmap[evlist[i].data.fd]);
                 close(evlist[i].data.fd);
                 close(fdmap[evlist[i].data.fd]);
                 continue;
             }
+
+            // write to associated fd
             buff[nread] = '\0';
             if (write(fdmap[evlist[i].data.fd], buff, strlen(buff)) == -1) {
                 DTRACE("%d: Write to %d failed, closing it and %d\n", getpid(), fdmap[evlist[i].data.fd], evlist[i].data.fd);
                 close(evlist[i].data.fd);
                 close(fdmap[evlist[i].data.fd]);
             }
-        }
-    }
+        } // end for
+    } // end while
 
-    return NULL;
-}
+    return NULL; // should never get here
+} // end epoll_loop()
 
 // performs the server end of the rembash protocol
 // returns 0, or -1 on failure
@@ -348,12 +366,12 @@ int setuppty(pid_t *pid) {
 
     // should only reach here if execlp failed 
     exit(EXIT_FAILURE); 
-} // end setuppty
+} // end setuppty()
 
 // signal handler for sigalrm
 void sigalrm_handler(int signum) {
     DTRACE("%d: SIGALRM handler fired\n", getpid());
-}
+} // end sigalrm_handler()
                  
 // function to be called by thread to handle each client
 void *handle_client(void *args) {
@@ -365,6 +383,9 @@ void *handle_client(void *args) {
     free(args);
 
     DTRACE("%d: Client handler thread created for fd=%d\n", getpid(), connect_fd);
+    
+    // detach the thread
+    pthread_detach(pthread_self());
 
     // set close on exec on the connection
     fcntl(connect_fd, F_SETFD, FD_CLOEXEC);
@@ -410,7 +431,7 @@ void *handle_client(void *args) {
 
     DTRACE("%d: Killing client handler thread for %d\n", getpid(), connect_fd);
     return NULL;
-}
+} // end handle_client
 
 
 
