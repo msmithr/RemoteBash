@@ -25,10 +25,11 @@
 #include <time.h>
 #include <sys/syscall.h>
 #include "DTRACE.h"
+
 #define PORT 4070
 #define SECRET "cs407rembash"
 #define MAX_NUM_CLIENTS 10000
-#define TIMEOUT 30
+#define TIMEOUT 5 
 
 // function prototypes
 int setup();
@@ -38,7 +39,7 @@ int protocol(int connect_fd);
 int setuppty(pid_t *pid);
 void *handle_client(void *args);
 void sigalrm_handler(int signum);
-
+void cleanup_client(int connect_fd);
 
 // global variables
 int epfd;
@@ -68,6 +69,14 @@ int main(int argc, char *argv[]) {
         if (connect_fd > (2*MAX_NUM_CLIENTS)+2) {
             DTRACE("%d: Too many clients! Closing connection\n", getpid());
             close(connect_fd);
+            continue;
+        }
+
+        // set close on exec on the connection
+        if (fcntl(connect_fd, F_SETFD, FD_CLOEXEC) == -1) {
+            DTRACE("%d: Error setting connection to close on exec: %s\n", getpid(), strerror(errno));
+            close(connect_fd);
+            continue;
         }
 
         // store connect_fd in malloc'd memory to pass to thread
@@ -164,27 +173,26 @@ void *epoll_loop(void *args) {
         for (int i = 0; i < ready_fd; i++) {
             // event is an error
             if (evlist[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
-                DTRACE("%d: EPOLLERR/HUP/RDHUP on fd=%d, closing it and %d\n", getpid(), evlist[i].data.fd, fdmap[evlist[i].data.fd]);
-                close(evlist[i].data.fd);
-                close(fdmap[evlist[i].data.fd]);
+                DTRACE("%d: EPOLLERR/HUP/RDHUP on fd=%d\n", getpid(), evlist[i].data.fd);
+                cleanup_client(evlist[i].data.fd);
                 continue;
             }
 
-            // read from fd
-            if ((nread = read(evlist[i].data.fd, buff, 4096)) <= 0) {
-                DTRACE("%d: Read from %d failed, closing it and %d\n", getpid(), evlist[i].data.fd, fdmap[evlist[i].data.fd]);
-                close(evlist[i].data.fd);
-                close(fdmap[evlist[i].data.fd]);
-                continue;
-            }
+            if (evlist[i].events & EPOLLIN) {
+                // read from fd
+                if ((nread = read(evlist[i].data.fd, buff, 4096)) <= 0) {
+                    DTRACE("%d: Read from %d failed\n", getpid(), evlist[i].data.fd);
+                    cleanup_client(evlist[i].data.fd);
+                    continue;
+                }
 
-            // write to associated fd
-            buff[nread] = '\0';
-            if (write(fdmap[evlist[i].data.fd], buff, strlen(buff)) == -1) {
-                DTRACE("%d: Write to %d failed, closing it and %d\n", getpid(), fdmap[evlist[i].data.fd], evlist[i].data.fd);
-                close(evlist[i].data.fd);
-                close(fdmap[evlist[i].data.fd]);
-            }
+                // write to associated fd
+                buff[nread] = '\0';
+                if (write(fdmap[evlist[i].data.fd], buff, strlen(buff)) == -1) {
+                    DTRACE("%d: Write to %d failed\n", getpid(), evlist[i].data.fd);
+                    cleanup_client(evlist[i].data.fd);
+                }
+            }    
         } // end for
     } // end while
 
@@ -404,18 +412,22 @@ void *handle_client(void *args) {
         return NULL;
     }
 
-    // set close on exec on the connection
-    if (fcntl(connect_fd, F_SETFD, FD_CLOEXEC) == -1) {
-        DTRACE("%d: Error setting connection to close on exec: %s\n", getpid(), strerror(errno));
-        close(connect_fd);
-        return NULL; 
-    }
 
     if (protocol(connect_fd) == -1) {
         DTRACE("%d: fd=%d closed, client handler thread killed\n", getpid(), connect_fd);
         close(connect_fd);
         return NULL;
     }
+
+    // create pty
+    if ((mfd = setuppty(&ptyfd)) == -1) {
+        close(connect_fd);
+        DTRACE("%d: fd=%d closed, client handler thread killed\n", getpid(), connect_fd);
+        return NULL;
+    }
+
+    fdmap[connect_fd] = mfd;
+    fdmap[mfd] = connect_fd;
 
     // add connection to epoll
     event.data.fd = connect_fd;
@@ -425,35 +437,30 @@ void *handle_client(void *args) {
         close(connect_fd);
         return NULL;
     }
-
     DTRACE("%d: fd=%d added to epoll\n", getpid(), connect_fd);
-
-    // create pty
-    if ((mfd = setuppty(&ptyfd)) == -1) {
-        close(connect_fd);
-        DTRACE("%d: fd=%d closed, client handler thread killed\n", getpid(), connect_fd);
-        return NULL;
-    }
 
     // add mfd to epoll
     event.data.fd = mfd;
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, mfd, &event) == -1) {
         DTRACE("%d: Failed to add fd=%d to epoll, closing %d and %d\n", getpid(), mfd, mfd, connect_fd);
-        close(connect_fd);
         close(mfd);
+        close(connect_fd);
         return NULL;
     }
     DTRACE("%d: fd=%d added to epoll\n", getpid(), mfd);
-
-    fdmap[connect_fd] = mfd;
-    fdmap[mfd] = connect_fd;
 
     DTRACE("%d: Killing client handler thread for %d\n", getpid(), connect_fd);
     return NULL;
 } // end handle_client
 
-
-
+// cleanup and close a client
+// input can be client socket fd or PTY mfd
+void cleanup_client(int fd) {
+    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
+    epoll_ctl(epfd, EPOLL_CTL_DEL, fdmap[fd], NULL);
+    close(fd);
+    close(fdmap[fd]);
+}
 
 //   _____ 
 //  < EOF >

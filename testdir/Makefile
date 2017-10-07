@@ -27,5 +27,6 @@ bad:
 	gcc -DDEBUG -Wall -std=gnu99 -orembash-terminate2 lab3-client-terminate2.c
 	gcc -DDEBUG -Wall -std=gnu99 -orembash-terminate3 lab3-client-terminate3.c
 	gcc -DDEBUG -Wall -std=gnu99 -orembash-terminate4 lab3-client-terminate4.c
+	gcc -DDEBUG -Wall -std=gnu99 -orembash-noresponse lab3-client-noresponse.c
 
 

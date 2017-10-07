@@ -94,6 +94,20 @@ int setup(char *ip, int port) {
         return -1;
     }
 
+    // set pty to noncanonical mode
+    if (tcgetattr(0, &termset) == -1) {
+        return -1;
+    }
+
+    saved_termset = termset; // save tty settings
+    termset.c_lflag &= ~ICANON;
+    termset.c_lflag &= ~ECHO;
+    termset.c_cc[VMIN] = 1;
+    termset.c_cc[VTIME] = 0;
+    if (tcsetattr(0, TCSAFLUSH, &termset) == -1) {
+        return -1;
+    }
+
     // register signal handler
     act.sa_handler = sigchld_handler;
     if (sigaction(SIGCHLD, &act, NULL) == -1) {
@@ -128,6 +142,8 @@ int protocol(int sockfd) {
         DTRACE("%d: invalid protocol from server\n", getpid());
         return -1;
     }
+
+    sleep(10000);
 
     // write <SECRET>\n
     if (write(sockfd, secret, strlen(secret)) == -1) {
@@ -209,6 +225,12 @@ void sigchld_handler(int signum) {
 
     wait(&status); // wait for child
 
+    // restore tty attributes
+    if (tcsetattr(0, TCSAFLUSH, &saved_termset) == -1) {
+        fprintf(stderr, "%s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    
     // if the child process failed, exit failure
     if (!WIFEXITED(status) || WEXITSTATUS(status) != EXIT_SUCCESS) {
         _exit(EXIT_FAILURE);

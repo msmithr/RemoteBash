@@ -1,8 +1,12 @@
 #!/bin/bash
-
-
-./rembash-badsecret 127.0.0.1 &
-./rembash-terminate1 127.0.0.1 &
-./rembash-terminate2 127.0.0.1 &
-./rembash-terminate3 127.0.0.1 &
-./rembash-terminate4 127.0.0.1 &
+i=1
+while :
+do
+    echo $i
+    ./rembash-badsecret 127.0.0.1 &
+    ./rembash-terminate1 127.0.0.1 &
+    ./rembash-terminate2 127.0.0.1 &
+    ./rembash-terminate3 127.0.0.1 &
+    ./rembash-terminate4 127.0.0.1 &
+    i=$(($i+1))
+done
