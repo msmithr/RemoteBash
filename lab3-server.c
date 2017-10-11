@@ -223,10 +223,6 @@ int protocol(int connect_fd) {
         DTRACE("%d: Error creating the timer: %s\n", getpid(), strerror(errno));
         return -1;
     }
-    if (timer_settime(timerid, 0, &ts, NULL) == -1) {
-        DTRACE("%d: Error setting the timer: %s\n", getpid(), strerror(errno));
-        return -1;
-    }
 
     // write <rembash>\n
     if (write(connect_fd, rembash, strlen(rembash)) == -1) {
@@ -235,13 +231,28 @@ int protocol(int connect_fd) {
     }
     DTRACE("%d: Wrote %s", getpid(), rembash);
 
+    if (timer_settime(timerid, 0, &ts, NULL) == -1) {
+        DTRACE("%d: Error setting the timer: %s\n", getpid(), strerror(errno));
+        return -1;
+    }
+
     // read <SECRET>\n
     if ((nread = read(connect_fd, buff, 4096)) == -1) {
-        DTRACE("%d: Error reading <SECRET>: %s\n", getpid(), strerror(errno));
+        if (errno == EINTR) {
+            DTRACE("%d: Timer expired\n", getpid());
+        } else {
+            DTRACE("%d: Error reading <SECRET>: %s\n", getpid(), strerror(errno));
+        }
         return -1;
     }
     buff[nread] = '\0';
     DTRACE("%d: Read %s", getpid(), buff);
+
+    // disarm the timer
+    if (timer_delete(timerid) == -1) {
+        DTRACE("%d: Error disarming timer: %s\n", getpid(), strerror(errno));
+        return -1;
+    }
 
     if (strcmp(buff, secret) != 0) {
         // write <error>\n
@@ -259,12 +270,6 @@ int protocol(int connect_fd) {
         return -1;
     }
     DTRACE("%d: Wrote %s", getpid(), ok);
-
-    // disarm the timer
-    if (timer_delete(timerid) == -1) {
-        DTRACE("%d: Error disarming timer: %s\n", getpid(), strerror(errno));
-        return -1;
-    }
 
     return 0;
 } // end protocol()
