@@ -185,9 +185,9 @@ void *epoll_loop(void *args) {
                     cleanup_client(evlist[i].data.fd);
                     continue;
                 }
+                buff[nread] = '\0';
 
                 // write to associated fd
-                buff[nread] = '\0';
                 if (write(fdmap[evlist[i].data.fd], buff, strlen(buff)) == -1) {
                     DTRACE("%d: Write to %d failed\n", getpid(), evlist[i].data.fd);
                     cleanup_client(evlist[i].data.fd);
@@ -376,21 +376,16 @@ int setuppty(pid_t *pid) {
     // redirect stdin/stdout/stderr to the pty slave
     for (int i = 0; i < 3; i++) {
         if (dup2(sfd, i) == -1) {
-            DTRACE("%d: Error on dup2: %s\n", getpid(), strerror(errno));
             exit(EXIT_FAILURE);
         }
     }
 
-    DTRACE("%d: Closing sfd=%d\n", getpid(), sfd);
     close(sfd); // no need for this anymore
-
-    DTRACE("%d: Execing into bash\n", getpid());
 
     // exec into bash
     execlp("bash", "bash", NULL);
 
     // should only reach here if execlp failed 
-    DTRACE("%d: exec failed: %s\n", getpid(), strerror(errno));
     exit(EXIT_FAILURE); 
 } // end setuppty()
 
