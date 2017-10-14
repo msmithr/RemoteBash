@@ -32,25 +32,40 @@ int connect_server(char *ip, int port);
 int protocol(int sockfd);
 void sigchld_handler(int signum);
 int setup(char *ip, int port);
+void sigint_handler(int signum);
 
 int main(int argc, char *argv[]) {
 
-    char *ip = argv[1];
-    int sockfd;
-    pid_t pid;
-   
-    
-    DTRACE("%d: Client starting: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
-
-    /* handle arguments */
+    // handle arguments
     if (argc != 2) {
         fprintf(stderr, "rembash: usage: ./rembash <ip address>\n");
         exit(EXIT_FAILURE);
     }
 
-    if ((sockfd = setup(ip, PORT)) == -1) {
+    char *ip = argv[1];
+    int sockfd;
+    pid_t pid;
+    struct sigaction act;
+   
+    DTRACE("%d: Client starting: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
+
+    switch (sockfd = setup(ip, PORT)) {
+    case -1:
         fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
+    case -2:
+        fprintf(stderr, "rembash: Protocol failed\n");
+        exit(EXIT_FAILURE);
+    case -3:
+        fprintf(stderr, "rembash: Invalid IP\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // register signal handler for SIGCHLD
+    act.sa_handler = sigchld_handler;
+    if (sigaction(SIGCHLD, &act, NULL) == -1) {
+        fprintf(stderr, "rembash: %s\n", strerror(errno));
+        return -1;
     }
 
     switch (pid = fork()) {
@@ -59,40 +74,62 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     case 0: // in child process
         write_loop(0, sockfd);
-        exit(EXIT_FAILURE);
+        DTRACE("%d: Terminating\n", getpid());
+        if (errno) exit(EXIT_FAILURE);
+        exit(EXIT_SUCCESS);
     } // end switch/case
 
     write_loop(sockfd, 1); 
 
+    // ignore SIGCHLD
+    signal(SIGCHLD, SIG_IGN);
     // kill and collect the subprocess
     kill(pid, SIGTERM); // SIGTERM to subprocess
-    wait(NULL); 
 
-    tcsetattr(0, TCSAFLUSH, &saved_termset);
+    if (tcsetattr(0, TCSAFLUSH, &saved_termset) == -1) {
+        fprintf(stderr, "rembash: %s\n", strerror(errno)); 
+        exit(EXIT_FAILURE);
+    }
+
+    if (errno) exit(EXIT_FAILURE);
     exit(EXIT_SUCCESS);
 
 } // end main()
 
 // generic setup for client
 // returns the connection fd, or -1 on failure
+// .. or -2 on failure that doesn't set errno (invalid protocol)
+// .. or -3 if ip is invalid
 int setup(char *ip, int port) {
-    struct sigaction act;
     struct termios termset;
     int sockfd;
+    struct sigaction act;
 
     // ignore sigpipe
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
         return -1;
     }   
 
+    // register signal handler for SIGCHLD
+    act.sa_handler = sigint_handler;
+    if (sigaction(SIGINT, &act, NULL) == -1) {
+        return -1;
+    }
+
     // connect to server
     if ((sockfd = connect_server(ip, PORT)) == -1) {
         return -1;
     }    
+    if (sockfd == -2) {
+        return -3;
+    }
 
     // perform protocol
-    if (protocol(sockfd) == -1) {
+    switch (protocol(sockfd)) {
+    case -1:
         return -1;
+    case -2:
+        return -2;
     }
 
     // set pty to noncanonical mode
@@ -109,17 +146,12 @@ int setup(char *ip, int port) {
         return -1;
     }
 
-    // register signal handler
-    act.sa_handler = sigchld_handler;
-    if (sigaction(SIGCHLD, &act, NULL) == -1) {
-        return -1;
-    }
-
     return sockfd;
 } // end setup()
 
 // performs client end of the rembash protocol
 // returns 0, or -1 on failure
+// ... or -2 on an error in which errno is not set (invalid protocol)
 int protocol(int sockfd) {
 
     /* perform protocol */
@@ -137,11 +169,9 @@ int protocol(int sockfd) {
         return -1;
     }
     buff[nread] = '\0';
-    DTRACE("%d: Read %s", getpid(), buff);
 
     if (strcmp(buff, rembash) != 0) {
-        DTRACE("%d: invalid protocol from server\n", getpid());
-        return -1;
+        return -2;
     }
 
     // write <SECRET>\n
@@ -149,7 +179,6 @@ int protocol(int sockfd) {
         DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;
     }
-    DTRACE("%d: Wrote %s", getpid(), secret);
 
     // read <ok>\n or <error>\n
     if ((nread = read(sockfd, buff, 4096)) == -1) {
@@ -157,18 +186,16 @@ int protocol(int sockfd) {
         return -1;
     }
     buff[nread] = '\0';
-    DTRACE("%d: Read %s", getpid(), buff);
 
     if (strcmp(buff, error) == 0) {
-        DTRACE("%d: Invalid secret\n", getpid());
-        return -1;
+        return -2;
     }
 
     if (strcmp(buff, ok) != 0) {
-        DTRACE("%d: Invalid protocol from server\n", getpid());
-        return -1;
+        return -2;
     }
 
+    DTRACE("%d: Protocol successful\n", getpid());
     return 0;
 }
 
@@ -177,11 +204,11 @@ void write_loop(int fromfd, int tofd) {
     int nread;
     char buff[4096];
     while ((nread = read(fromfd, buff, 4096)) > 0) {
-        buff[nread] = '\0';
-        if (write(tofd, buff, strlen(buff)) == -1) {
-            return;
+        if (write(tofd, buff, nread) == -1) {
+            break;
         }
     }   
+    DTRACE("%d: Write loop from %d to %d terminated\n", getpid(), fromfd, tofd);
     return;
 }
 
@@ -194,7 +221,6 @@ int connect_server(char *ip, int port) {
 
     // create socket
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-        DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;
     }
     
@@ -203,39 +229,47 @@ int connect_server(char *ip, int port) {
     servaddr.sin_family = AF_INET;
     servaddr.sin_port = htons(port);
     if (inet_aton(ip, &servaddr.sin_addr) == 0) {
-        DTRACE("%d: invalid ip address: %s\n", getpid(), ip);
-        return -1;
+        return -2;
     }
     
     // connect
     if (connect(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr)) == -1) {
-        DTRACE("%d: %s\n", getpid(), strerror(errno));
         return -1;    
     }
 
     return sockfd;
 } // end connect_server()
 
+// sigint handler, for ctrl+c
+// need to fix terminal settings before closing
+void sigint_handler(int signum) {
+    DTRACE("SIGINT handler fired\n");
+    if (tcsetattr(0, TCSAFLUSH, &saved_termset) == -1) {
+        fprintf(stderr, "rembash: %s\n", strerror(errno)); 
+    }
+    _exit(EXIT_FAILURE);
+}
+
 // sigchld handler, fires whenever child process dies
 void sigchld_handler(int signum) {
     int status;
-
     DTRACE("%d: SIGCHLD handler fired, child process has terminated\n", getpid());
-
-    wait(&status); // wait for child
 
     // restore tty attributes
     if (tcsetattr(0, TCSAFLUSH, &saved_termset) == -1) {
         fprintf(stderr, "%s\n", strerror(errno));
-        exit(EXIT_FAILURE);
+        _exit(EXIT_FAILURE);
     }
-    
+
+    wait(&status); // wait for child
+
     // if the child process failed, exit failure
     if (!WIFEXITED(status) || WEXITSTATUS(status) != EXIT_SUCCESS) {
         _exit(EXIT_FAILURE);
     }
 
     // terminate
+    DTRACE("%d: Terminating process\n", getpid()); 
     _exit(EXIT_SUCCESS);
 }
 
