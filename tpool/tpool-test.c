@@ -5,7 +5,6 @@ void process_task(int task);
 
 int main(int argc, char *argv[]) {
     tpool_init(process_task);
-    print_queue();
 
     return 0;
 }
