@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <unistd.h>
 #include "tpool.h"
 
 #define INITIAL_SIZE 5
@@ -11,6 +12,7 @@ static int dequeue();
 static int is_empty();
 static int is_full();
 static void expand_queue();
+static void *worker_function(void *args);
 
 // global thread pool variable
 tpool_t tpool;
@@ -83,6 +85,12 @@ int tpool_init(void (*process_task)(int)) {
     tpool.queue_size = INITIAL_SIZE;
     tpool.queue = malloc(sizeof(int) * INITIAL_SIZE);
     tpool.process_task = process_task;
+ 
+    pthread_t tid; 
+    for (int i = 0; i < sysconf(_SC_NPROCESSORS_ONLN); i++) {
+        pthread_create(&tid, NULL, worker_function, NULL);
+    }
+
     return 0;
 }
 
@@ -91,6 +99,21 @@ int tpool_add_task(int newtask) {
     enqueue(newtask);
     pthread_mutex_unlock(&tpool.mutex);
     pthread_cond_signal(&tpool.cv);
-    print_queue();
     return 0;
+}
+
+static void *worker_function(void *args) {
+    int task;
+
+    while(1) {
+        pthread_mutex_lock(&tpool.mutex);
+        while (is_empty()) {
+            pthread_cond_wait(&tpool.cv, &tpool.mutex);
+        }
+        task = dequeue();
+        pthread_mutex_unlock(&tpool.mutex);
+        tpool.process_task(task);
+    }
+
+    return NULL;
 }
