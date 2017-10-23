@@ -51,9 +51,8 @@ static void enqueue(int elem) {
 }
 
 static int dequeue() {
-    int result = tpool.queue[tpool.queue_front];
     tpool.queue_front = (tpool.queue_front + 1) % tpool.queue_size;
-    return result;
+    return tpool.queue[(tpool.queue_front - 1) % tpool.queue_size];
 }
 
 static int is_empty() {
