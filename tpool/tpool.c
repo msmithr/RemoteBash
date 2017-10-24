@@ -1,118 +1,137 @@
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <pthread.h>
 #include <unistd.h>
-#include "tpool.h"
 
-#define INITIAL_SIZE 5
+#define TASKS_PER_THREAD 5 // initial queue size (?)
 
-static void print_queue();
-static void enqueue();
+typedef struct tpool {
+    int front;  // front of queue
+    int back;   // back of queue
+    int cap;    // current max capacity of queue
+    int size;   // current size of queue --modified by producer/consumers, not en/dequeue
+    int *data;  // array storing queue data
+    pthread_mutex_t mutex;          // mutex for queue access
+    pthread_mutex_t empty_mutex;    // mutex associated with emptiness of queue
+    pthread_cond_t empty_cv;        // cond associated with emptiness of queue
+    void (*process_task)(int);      // worker function 
+} tpool_t;
+
+static void enqueue(int elem);
 static int dequeue();
-static int is_empty();
-static int is_full();
-static void expand_queue();
-static void *worker_function(void *args);
+static void queue_expand();
+static void print_queue();
+static void *worker_function(void *arg);
+int tpool_init(void (*process_task)(int));
+int tpool_add_task(int newtask);
 
-// global thread pool variable
 tpool_t tpool;
 
-static void print_queue() {
-    printf("Data: ");
-    for (int i = 0; i < tpool.queue_size; i++) {
-        printf("%d ", tpool.queue[i]);
-    }
-    printf("\n");
-
-
-    printf("Queue: ");
-    if (is_empty()) {
-        printf("Empty!\n");
-    } else {
-        for (int i = tpool.queue_front; i != (tpool.queue_back + 1) % tpool.queue_size; i = (i + 1) % tpool.queue_size) {
-            printf("%d ", tpool.queue[i]);
-        }
-        if (is_full()) {
-            printf("Full!");
-        }
-        printf("\n");
-    }
-
-    printf("Front: %d\n", tpool.queue_front);
-    printf("Back: %d\n", tpool.queue_back);
-}
-
 static void enqueue(int elem) {
-    if (is_full()) {
-        expand_queue();
+    if (tpool.size == tpool.cap) {
+        queue_expand();
     }
-    tpool.queue_back = (tpool.queue_back + 1) % tpool.queue_size;
-    tpool.queue[tpool.queue_back] = elem;
+
+    tpool.data[tpool.back] = elem;
+    tpool.back = (tpool.back + 1) % tpool.cap;
 }
 
 static int dequeue() {
-    tpool.queue_front = (tpool.queue_front + 1) % tpool.queue_size;
-    return tpool.queue[(tpool.queue_front - 1) % tpool.queue_size];
+    tpool.front = (tpool.front + 1) % tpool.cap;
+    return tpool.data[(tpool.front - 1) % tpool.cap];
 }
 
-static int is_empty() {
-    return (tpool.queue_front == (tpool.queue_back + 1) % tpool.queue_size);
-}
-
-static int is_full() {
-    return (tpool.queue_front == (tpool.queue_back + 2) % tpool.queue_size);
-}
-
-static void expand_queue() {
-    int *new_array = malloc(sizeof(int) * tpool.queue_size * 2);
+static void queue_expand() {
+    int *new_array = malloc(sizeof(int) * tpool.size * 2);
     int i = 0;
-    for (int j = tpool.queue_front; j != (tpool.queue_back + 1) % tpool.queue_size; j = (j + 1) % tpool.queue_size) {
-        new_array[i] = tpool.queue[j];
+    for (int j = 0; j < tpool.size; j++) {
+        new_array[i] = tpool.data[(j + tpool.front) % tpool.cap];
         i++;
     }
-    tpool.queue_size *= 2;
-    free(tpool.queue);
-    tpool.queue = new_array;
+
+    tpool.front = 0;
+    tpool.back = tpool.size;
+
+    tpool.cap *= 2;
+    free(tpool.data);
+    tpool.data = new_array;
 }
 
+static void print_queue() {
+    printf("Data: ");
+    for (int i = 0; i < tpool.cap; i++) {
+        printf("%d ", tpool.data[i]);
+    }
+    printf("\n");
+    printf("Queue: ");
+    
+    for (int i = 0; i < tpool.size; i++) {
+        printf("%d ", tpool.data[(i + tpool.front) % tpool.cap]);
+    }
+    printf("\n");
+}
 
+// function to be called by worker threads
+// infinitely pulls tasks from task queue and processes them
+// --consumer
+static void *worker_function(void *arg) {
+    int task;
+    while (1) {
+        pthread_mutex_lock(&tpool.empty_mutex);
+        while (tpool.size == 0) {
+            pthread_cond_wait(&tpool.empty_cv, &tpool.empty_mutex);
+        }
+        tpool.size--;
+        pthread_mutex_unlock(&tpool.empty_mutex);
+
+        pthread_mutex_lock(&tpool.mutex);
+        task = dequeue();
+        pthread_mutex_unlock(&tpool.mutex);
+
+        tpool.process_task(task);
+    }
+    return NULL;
+}
+
+// initialize the thread pool
 int tpool_init(void (*process_task)(int)) {
-    pthread_mutex_init(&tpool.mutex, NULL);
-    pthread_cond_init(&tpool.cv, NULL);
-    tpool.queue_front = 0;
-    tpool.queue_back = INITIAL_SIZE-1;
-    tpool.queue_size = INITIAL_SIZE;
-    tpool.queue = malloc(sizeof(int) * INITIAL_SIZE);
+    tpool.front = 0;
+    tpool.back = 0;
+    tpool.cap = TASKS_PER_THREAD;
+    tpool.size = 0;
     tpool.process_task = process_task;
- 
-    pthread_t tid; 
+
+    if ((tpool.data = malloc(sizeof(int) * TASKS_PER_THREAD)) == NULL)
+        return -1;
+
+    pthread_mutex_init(&tpool.mutex, NULL);
+    pthread_mutex_init(&tpool.empty_mutex, NULL);
+    pthread_cond_init(&tpool.empty_cv, NULL);
+
+    // create threads
+    pthread_t tid;
     for (int i = 0; i < sysconf(_SC_NPROCESSORS_ONLN); i++) {
         pthread_create(&tid, NULL, worker_function, NULL);
     }
-
     return 0;
 }
 
+// give a task to the thread pool -- producer
 int tpool_add_task(int newtask) {
     pthread_mutex_lock(&tpool.mutex);
-    enqueue(newtask);
-    pthread_mutex_unlock(&tpool.mutex);
-    pthread_cond_signal(&tpool.cv);
-    return 0;
-}
 
-static void *worker_function(void *args) {
-    int task;
-
-    while(1) {
-        pthread_mutex_lock(&tpool.mutex);
-        while (is_empty()) {
-            pthread_cond_wait(&tpool.cv, &tpool.mutex);
-        }
-        task = dequeue();
-        pthread_mutex_unlock(&tpool.mutex);
-        tpool.process_task(task);
+    // add task to queue
+    if (tpool.size == tpool.cap) {
+        queue_expand();
     }
+    enqueue(newtask);
 
-    return NULL;
+    pthread_mutex_unlock(&tpool.mutex);
+
+    // signal consumer that condition var has changed
+    pthread_mutex_lock(&tpool.empty_mutex);
+    tpool.size++;
+    pthread_mutex_unlock(&tpool.empty_mutex);
+    pthread_cond_signal(&tpool.empty_cv);
+    return 0;
 }
