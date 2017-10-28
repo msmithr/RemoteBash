@@ -9,11 +9,7 @@ int factorial(int n);
 int main(int argc, char *argv[]) {
     tpool_init(process_task);
     while (1) {
-        for (int i = 0; i < 10; i++) {
-            tpool_add_task(i);
-        }
-
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < 20; i++) {
             tpool_add_task(i);
         }
     }
@@ -25,7 +21,6 @@ int main(int argc, char *argv[]) {
 
 // brute force algorithm for calculating factorial
 void process_task(int task) {
-    sleep(2);
     for (int i = 0;;i++) {
         if (i == factorial(i)) {
             printf("%ld:  %d! = %d\n", syscall(__NR_gettid), task, factorial(task));

@@ -28,7 +28,7 @@ int tpool_init(void (*process_task)(int));
 int tpool_add_task(int newtask);
 
 // global thread pool variable
-tpool_t tpool;
+static tpool_t tpool;
 
 // blindly add an element to the queue
 static void enqueue(int elem) {
@@ -92,6 +92,8 @@ int tpool_init(void (*process_task)(int)) {
     int nthreads = sysconf(_SC_NPROCESSORS_ONLN);
     tpool.front = 0;
     tpool.back = 0;
+    tpool.empty_sem = 0;
+    tpool.full_sem = 0;
     tpool.cap = TASKS_PER_THREAD * nthreads;
     tpool.process_task = process_task;
 
