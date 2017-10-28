@@ -42,20 +42,6 @@ static int dequeue() {
     return tpool.data[(tpool.front - 1) % tpool.cap];
 }
 
-static void print_queue() {
-    printf("Data: ");
-    for (int i = 0; i < tpool.cap; i++) {
-        printf("%d ", tpool.data[i]);
-    }
-    printf("\n");
-    printf("Queue: ");
-    
-    for (int i = 0; i < tpool.empty_sem; i++) {
-        printf("%d ", tpool.data[(i + tpool.front) % tpool.cap]);
-    }
-    printf("\n");
-}
-
 // function to be called by worker threads
 // infinitely pulls tasks from task queue and processes them
 // --consumer
