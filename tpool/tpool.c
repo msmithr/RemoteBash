@@ -22,7 +22,6 @@ typedef struct tpool {
 
 static void enqueue(int elem);
 static int dequeue();
-static void print_queue();
 static void *worker_function(void *arg);
 int tpool_init(void (*process_task)(int));
 int tpool_add_task(int newtask);
