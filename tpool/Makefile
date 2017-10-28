@@ -18,4 +18,4 @@ shared:
 	export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:.
 
 clean:
-	rm test testa testso libtpool.so libtpool.a 2>/dev/null
+	rm test testa testso libtpool.so libtpool.a tpool.o 2>/dev/null
