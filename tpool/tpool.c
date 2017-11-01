@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <signal.h>
 
 #define TASKS_PER_THREAD 5
 
@@ -23,6 +24,7 @@ typedef struct tpool {
 static void enqueue(int elem);
 static int dequeue();
 static void *worker_function(void *arg);
+static void sigusr1_handler(int signum);
 int tpool_init(void (*process_task)(int));
 int tpool_add_task(int newtask);
 
@@ -81,7 +83,7 @@ int tpool_init(void (*process_task)(int)) {
     tpool.full_sem = 0;
     tpool.cap = TASKS_PER_THREAD * nthreads;
     tpool.process_task = process_task;
-
+    struct sigaction act;
 
     if ((tpool.data = malloc(sizeof(int) * TASKS_PER_THREAD * nthreads)) == NULL)
         return -1;
@@ -92,10 +94,23 @@ int tpool_init(void (*process_task)(int)) {
     pthread_mutex_init(&tpool.full_mutex, NULL);
     pthread_cond_init(&tpool.full_cv, NULL);
 
+    // register sigusr1 handler for the threads
+    act.sa_handler = sigusr1_handler;
+    act.sa_flags = 0;
+    if (sigaction(SIGUSR1, &act, NULL) == -1) {
+        return -1; 
+    }  
+
     // create threads
-    pthread_t tid;
-    for (int i = 0; i < sysconf(_SC_NPROCESSORS_ONLN); i++) {
-        pthread_create(&tid, NULL, worker_function, NULL);
+    pthread_t threads[nthreads];
+    for (int i = 0; i < nthreads; i++) {
+        if (pthread_create(&threads[i], NULL, worker_function, NULL) != 0) {
+            // if something went wrong creating the threads, send SIGUSR1 to those already created
+            for (int j = 0; j < i; j++) {
+                pthread_kill(threads[i], SIGUSR1);
+            }
+            return -1;
+        }
     }
     return 0;
 }
@@ -121,6 +136,11 @@ int tpool_add_task(int newtask) {
     pthread_mutex_unlock(&tpool.empty_mutex);
     pthread_cond_signal(&tpool.empty_cv);
     return 0;
+}
+
+// SIGUSR1 is sent to all created threads when a pthread_create fails
+static void sigusr1_handler(int signum) {
+    pthread_exit(NULL);
 }
 
 /*

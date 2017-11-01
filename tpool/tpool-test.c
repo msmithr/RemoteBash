@@ -7,7 +7,9 @@ void process_task(int task);
 int factorial(int n);
 
 int main(int argc, char *argv[]) {
-    tpool_init(process_task);
+    if (tpool_init(process_task) == -1) {
+        return -1;
+    }
     while (1) {
         for (int i = 0; i < 20; i++) {
             tpool_add_task(i);
