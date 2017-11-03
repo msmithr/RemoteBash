@@ -1,4 +1,4 @@
-// CS 407 Lab 03 - Server                                                                                                          
+// CS 407 Lab 05 - Server                                                                                                          
 //
 // Client/server application allowing user to run bash
 // commands on a remote machine, similar to SSH or TELNET
