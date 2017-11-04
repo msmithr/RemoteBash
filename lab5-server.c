@@ -25,11 +25,27 @@
 #include <time.h>
 #include <sys/syscall.h>
 #include "DTRACE.h"
+#include "tpool.h"
 
 #define PORT 4070
 #define SECRET "cs407rembash"
 #define MAX_NUM_CLIENTS 10000
 #define TIMEOUT 5 
+
+// type definitions
+typedef enum client_state {
+    NEW,
+    ESTABLISHED,
+    UNWRITTEN,
+    TERMINATED,
+} client_state;
+
+typedef struct client_object {
+    client_state state;
+    int ptyfd;
+    int sockfd;
+    char *data;
+} client_object;
 
 // function prototypes
 int setup();
@@ -40,6 +56,7 @@ int setuppty(pid_t *pid);
 void *handle_client(void *args);
 void sigalrm_handler(int signum);
 void cleanup_client(int connect_fd);
+void worker_function(int task);
 
 // global variables
 int epfd;
@@ -49,7 +66,7 @@ int main(int argc, char *argv[]) {
 
     DTRACE("%d: Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
 
-    int connect_fd, sockfd, *connect_fd_ptr;
+    int connect_fd, sockfd;
     pthread_t tid;
 
     // generic setup
@@ -58,47 +75,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }   
 
-    /* infinite loop accepting connections */
-    while(1) {
-        if ((connect_fd = accept(sockfd, (struct sockaddr *) NULL, NULL)) == -1) {
-            continue; // if accept failed, continue to next iteration
-        }   
-
-        DTRACE("%d: Connection fd=%d accepted\n", getpid(), connect_fd);
-
-        if (connect_fd > (2*MAX_NUM_CLIENTS)+2) {
-            DTRACE("%d: Too many clients! Closing connection\n", getpid());
-            close(connect_fd);
-            continue;
-        }
-
-        // set close on exec on the connection
-        if (fcntl(connect_fd, F_SETFD, FD_CLOEXEC) == -1) {
-            DTRACE("%d: Error setting connection to close on exec: %s\n", getpid(), strerror(errno));
-            close(connect_fd);
-            continue;
-        }
-
-        // store connect_fd in malloc'd memory to pass to thread
-        if ((connect_fd_ptr = malloc(sizeof(int))) == NULL) {
-            DTRACE("%d: Malloc for client handling thread failed: %s\n", getpid(), strerror(errno));
-            close(connect_fd);
-            continue;
-        }
-        *connect_fd_ptr = connect_fd;
-
-        // pass the client off to a temporary thread to initialize it
-        if (pthread_create(&tid, NULL, handle_client, connect_fd_ptr) != 0) {
-            DTRACE("%d: Failed to create client handling thread: %s\n", getpid(), strerror(errno));
-            close(connect_fd);
-            continue;
-        }
-
-    } // end while
-
-    // should never get here
-    exit(EXIT_FAILURE);
-
+    exit(EXIT_SUCCESS);
 } // end main()
 
 // generic setup for the server
@@ -150,6 +127,11 @@ int setup() {
     // create the I/O thread
     if (pthread_create(&tid, NULL, epoll_loop, NULL) != 0) {
         DTRACE("%d: Error creating epoll I/O thread: %s\n", getpid(), strerror(errno));
+        return -1;
+    }
+
+    if (tpool_init(worker_function) == -1) {
+        DTRACE("%d: Error initializing thread tpool: %s\n", getpid(), strerror(errno));
         return -1;
     }
 
@@ -460,6 +442,10 @@ void cleanup_client(int fd) {
     epoll_ctl(epfd, EPOLL_CTL_DEL, fdmap[fd], NULL);
     close(fd);
     close(fdmap[fd]);
+}
+
+void worker_function(int task) {
+    printf("%d\n", task);
 }
 
 //   _____ 
