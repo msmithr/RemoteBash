@@ -48,7 +48,7 @@ typedef struct client_object {
 } client_object;
 
 // function prototypes
-int setup();
+int *setup();
 void *epoll_loop(void *args);
 int setup_server_socket(int port);
 int protocol(int connect_fd);
@@ -75,25 +75,32 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }   
 
+    while (1) {
+        ready_fd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS*2, -1);
+    }
+
     exit(EXIT_SUCCESS);
 } // end main()
 
 // generic setup for the server
-// returns listening socket fd, or -1 on failure
-int setup() {
+// returns an array consisting of sockfd and epoll fd
+// or NULL on failure
+int *setup() {
     int sockfd;
     struct sigaction act;
     pthread_t tid;
+    struct epoll_event event;   
+    static int result[2];
 
     // set up the server socket
     if ((sockfd = setup_server_socket(PORT)) == -1) {
-        return -1;
+        return NULL;
     }
 
     // set close on exec on listening server
     if (fcntl(sockfd, F_SETFD, FD_CLOEXEC) == -1) {
         DTRACE("%d: Error setting close on exec on listening server: %s\n", getpid(), strerror(errno));
-        return -1;
+        return NULL;
     }
 
     DTRACE("%d: Listening socket fd=%d created\n", getpid(), sockfd);
@@ -101,13 +108,13 @@ int setup() {
     // ignore SIGCHLD
     if (signal(SIGCHLD, SIG_IGN) == SIG_ERR) {
         DTRACE("%d: Error setting SIGCHLD to ignore: %s\n", getpid(), strerror(errno));
-        return -1;
+        return NULL;
     }
 
     // ignore SIGPIPE
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
         DTRACE("%d: Error setting SIGPIPE to ignore: %s\n", getpid(), strerror(errno));
-        return -1;
+        return NULL;
     }
 
     // register sigalrm handler
@@ -115,27 +122,32 @@ int setup() {
     act.sa_flags = 0;
     if (sigaction(SIGALRM, &act, NULL) == -1) {
         DTRACE("%d: Error registering SIGALRM handler: %s\n", getpid(), strerror(errno));
-        return -1;
+        return NULL;
     }
 
     // create epoll
     if ((epfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
         DTRACE("%d: Error creating epoll: %s\n", getpid(), strerror(errno));
-        return -1;
+        return NULL;
     }
 
-    // create the I/O thread
-    if (pthread_create(&tid, NULL, epoll_loop, NULL) != 0) {
-        DTRACE("%d: Error creating epoll I/O thread: %s\n", getpid(), strerror(errno));
-        return -1;
+    // add listening socket to epoll
+    event.data.fd = sockfd;
+    event.events = EPOLLIN;
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &event) == -1) {
+        DTRACE("%d: Error adding listening socket to epoll: %s\n", getpid(), strerror(errno));
+        return NULL;
     }
 
+    // create thread pool
     if (tpool_init(worker_function) == -1) {
         DTRACE("%d: Error initializing thread tpool: %s\n", getpid(), strerror(errno));
-        return -1;
+        return NULL;
     }
 
-    return sockfd;
+    result[0] = sockfd;
+    result[1] = epfd;
+    return result;
 } // end setup()
 
 // function to be called be the thread
