@@ -49,34 +49,45 @@ typedef struct client_object {
 
 // function prototypes
 int *setup();
-void *epoll_loop(void *args);
 int setup_server_socket(int port);
 int protocol(int connect_fd);
 int setuppty(pid_t *pid);
-void *handle_client(void *args);
 void sigalrm_handler(int signum);
-void cleanup_client(int connect_fd);
 void worker_function(int task);
+int epoll_add(int epfd, int fd);
+int client_init(int epfd, int connectfd);
 
 // global variables
-int epfd;
-int fdmap[(MAX_NUM_CLIENTS * 2) + 6]; 
+client_object *fdmap[(MAX_NUM_CLIENTS * 2) + 6]; 
 
 int main(int argc, char *argv[]) {
 
     DTRACE("%d: Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
 
-    int connect_fd, sockfd;
-    pthread_t tid;
+    int *setup_result, sockfd, epfd, readyfd, eventfd, connectfd;
+    struct epoll_event evlist[MAX_NUM_CLIENTS*2];
 
     // generic setup
-    if ((sockfd = setup()) == -1) {
+    if ((setup_result = setup()) == NULL) {
         fprintf(stderr, "rembashd: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }   
+    
+    sockfd = setup_result[0];
+    epfd = setup_result[1];
 
     while (1) {
-        ready_fd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS*2, -1);
+        readyfd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS*2, -1);
+        for (int i = 0; i < readyfd; i++) {
+            eventfd = evlist[i].data.fd; 
+
+            // if the event is a new connection
+            if (eventfd == sockfd) {
+                connectfd = accept(eventfd, (struct sockaddr *) NULL, NULL); 
+                client_init(epfd, connectfd);
+            }
+            // read/write
+        }
     }
 
     exit(EXIT_SUCCESS);
@@ -86,10 +97,8 @@ int main(int argc, char *argv[]) {
 // returns an array consisting of sockfd and epoll fd
 // or NULL on failure
 int *setup() {
-    int sockfd;
+    int sockfd, epfd;
     struct sigaction act;
-    pthread_t tid;
-    struct epoll_event event;   
     static int result[2];
 
     // set up the server socket
@@ -131,11 +140,7 @@ int *setup() {
         return NULL;
     }
 
-    // add listening socket to epoll
-    event.data.fd = sockfd;
-    event.events = EPOLLIN;
-    if (epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &event) == -1) {
-        DTRACE("%d: Error adding listening socket to epoll: %s\n", getpid(), strerror(errno));
+    if (epoll_add(epfd, sockfd) == -1) {
         return NULL;
     }
 
@@ -150,48 +155,22 @@ int *setup() {
     return result;
 } // end setup()
 
-// function to be called be the thread
-// handles I/O using epoll
-void *epoll_loop(void *args) {
-    int ready_fd, nread;
-    struct epoll_event evlist[MAX_NUM_CLIENTS*2];
-    char buff[4096];
+// first half of rembash protocol 
+// write protocol id
+int protocol_init(int connectfd) {
+    const char * const rembash = "<rembash>\n";
+    if (write(connectfd, rembash, strlen(rembash)) == -1) {
+        DTRACE("%d: Error writing <rembash>: %s\n", getpid(), strerror(errno));
+        return -1;
+    }
+    return 0;
+}
 
-    // infinite epoll_wait loop
-    while (1) {
-        if ((ready_fd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS*2, -1)) == -1) {
-            DTRACE("%d: Error on epoll_wait call:  %s\n", getpid(), strerror(errno));
-            return NULL;
-        }
-
-        for (int i = 0; i < ready_fd; i++) {
-            // event is an error
-            if (evlist[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
-                DTRACE("%d: EPOLLERR/HUP/RDHUP on fd=%d\n", getpid(), evlist[i].data.fd);
-                cleanup_client(evlist[i].data.fd);
-                continue;
-            }
-
-            if (evlist[i].events & EPOLLIN) {
-                // read from fd
-                if ((nread = read(evlist[i].data.fd, buff, 4096)) <= 0) {
-                    DTRACE("%d: Read from %d failed\n", getpid(), evlist[i].data.fd);
-                    cleanup_client(evlist[i].data.fd);
-                    continue;
-                }
-                buff[nread] = '\0';
-
-                // write to associated fd
-                if (write(fdmap[evlist[i].data.fd], buff, strlen(buff)) == -1) {
-                    DTRACE("%d: Write to %d failed\n", getpid(), evlist[i].data.fd);
-                    cleanup_client(evlist[i].data.fd);
-                }
-            }    
-        } // end for
-    } // end while
-
-    return NULL; // should never get here
-} // end epoll_loop()
+// second half of rembash protocol
+// read and verify secret
+int protocol_receive_secret(int connectfd) {
+    return 0;
+}
 
 // performs the server end of the rembash protocol
 // returns 0, or -1 on failure
@@ -387,77 +366,61 @@ int setuppty(pid_t *pid) {
 void sigalrm_handler(int signum) {
     DTRACE("%d: SIGALRM handler fired\n", getpid());
 } // end sigalrm_handler()
-                 
-// function to be called by thread to handle each client
-void *handle_client(void *args) {
-    struct epoll_event event;   
-    int mfd, connect_fd;
-    pid_t ptyfd;
-
-    connect_fd = *(int*)args;
-    free(args);
-
-    DTRACE("%d: Client handler thread created for fd=%d\n", getpid(), connect_fd);
-    
-    // detach the thread
-    if (pthread_detach(pthread_self()) == -1) {
-        DTRACE("%d: Error detaching thread: %s\n", getpid(), strerror(errno));
-        close(connect_fd);
-        return NULL;
-    }
-
-
-    if (protocol(connect_fd) == -1) {
-        DTRACE("%d: fd=%d closed, client handler thread killed\n", getpid(), connect_fd);
-        close(connect_fd);
-        return NULL;
-    }
-
-    // create pty
-    if ((mfd = setuppty(&ptyfd)) == -1) {
-        close(connect_fd);
-        DTRACE("%d: fd=%d closed, client handler thread killed\n", getpid(), connect_fd);
-        return NULL;
-    }
-
-    fdmap[connect_fd] = mfd;
-    fdmap[mfd] = connect_fd;
-
-    // add connection to epoll
-    event.data.fd = connect_fd;
-    event.events = EPOLLIN;
-    if (epoll_ctl(epfd, EPOLL_CTL_ADD, connect_fd, &event) == -1) {
-        DTRACE("%d: Failed to add fd=%d to epoll, closing %d\n", getpid(), connect_fd, connect_fd);
-        close(connect_fd);
-        return NULL;
-    }
-    DTRACE("%d: fd=%d added to epoll\n", getpid(), connect_fd);
-
-    // add mfd to epoll
-    event.data.fd = mfd;
-    if (epoll_ctl(epfd, EPOLL_CTL_ADD, mfd, &event) == -1) {
-        DTRACE("%d: Failed to add fd=%d to epoll, closing %d and %d\n", getpid(), mfd, mfd, connect_fd);
-        close(mfd);
-        close(connect_fd);
-        return NULL;
-    }
-    DTRACE("%d: fd=%d added to epoll\n", getpid(), mfd);
-
-    DTRACE("%d: Killing client handler thread for %d\n", getpid(), connect_fd);
-    return NULL;
-} // end handle_client
-
-// cleanup and close a client
-// input can be client socket fd or PTY mfd
-void cleanup_client(int fd) {
-    epoll_ctl(epfd, EPOLL_CTL_DEL, fd, NULL);
-    epoll_ctl(epfd, EPOLL_CTL_DEL, fdmap[fd], NULL);
-    close(fd);
-    close(fdmap[fd]);
-}
 
 void worker_function(int task) {
     printf("%d\n", task);
+}
+
+// add a given fd to a given epoll
+// returns 0, or -1 on failure
+int epoll_add(int epfd, int fd) {
+    struct epoll_event event;   
+    event.data.fd = fd;
+    event.events = EPOLLIN;
+    if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event) == -1) {
+        DTRACE("%d: Failed to add fd=%d to epoll\n", getpid(), fd);
+        return -1;
+    }
+    return 0;
+}
+
+// initialize a client
+int client_init(int epfd, int connectfd) {
+    int mfd;
+    pid_t ptyfd;
+    client_object *client;
+    
+    // perform first half of the procol with the client
+    if (protocol_init(connectfd) == -1) {
+        return -1;
+    } 
+
+    // create pty
+    if ((mfd = setuppty(&ptyfd)) == -1) {
+        return -1;
+    }
+   
+    // create client object
+    client = malloc(sizeof(client_object));
+    client->sockfd = connectfd;
+    client->ptyfd = mfd;
+    client->state = NEW;
+
+    // set up mapping
+    fdmap[connectfd] = client;
+    fdmap[mfd] = client;
+    
+    // add connection to epoll
+    if (epoll_add(epfd, connectfd) == -1) {
+        return -1;
+    }
+
+    // add mfd to epoll
+    if (epoll_add(epfd, mfd) == -1) {
+        return -1;
+    }
+
+    return 0;
 }
 
 //   _____ 
