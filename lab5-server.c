@@ -1,5 +1,4 @@
 // CS 407 Lab 05 - Server                                                                                                          
-//
 // Client/server application allowing user to run bash
 // commands on a remote machine, similar to SSH or TELNET
 //
@@ -50,7 +49,8 @@ typedef struct client_object {
 // function prototypes
 int *setup();
 int setup_server_socket(int port);
-int protocol(int connect_fd);
+int protocol_init(int conncetfd);
+int protocol_receive_secret(int connectfd);
 int setuppty(pid_t *pid);
 void sigalrm_handler(int signum);
 void worker_function(int task);
@@ -66,6 +66,8 @@ int main(int argc, char *argv[]) {
 
     int *setup_result, sockfd, epfd, readyfd, eventfd, connectfd;
     struct epoll_event evlist[MAX_NUM_CLIENTS*2];
+    client_object *client;
+    char buff[4096];
 
     // generic setup
     if ((setup_result = setup()) == NULL) {
@@ -78,6 +80,7 @@ int main(int argc, char *argv[]) {
 
     while (1) {
         readyfd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS*2, -1);
+
         for (int i = 0; i < readyfd; i++) {
             eventfd = evlist[i].data.fd; 
 
@@ -85,8 +88,21 @@ int main(int argc, char *argv[]) {
             if (eventfd == sockfd) {
                 connectfd = accept(eventfd, (struct sockaddr *) NULL, NULL); 
                 client_init(epfd, connectfd);
+                continue;
             }
-            // read/write
+            
+            client = fdmap[evlist[i].data.fd];
+            switch (client->state) {
+                case NEW:
+                    protocol_receive_secret(eventfd);
+                    client->state = ESTABLISHED;
+                    break;
+                case ESTABLISHED:
+                    break;
+                default:
+                    printf("Hello?\n");
+                    break;
+            }
         }
     }
 
@@ -169,68 +185,25 @@ int protocol_init(int connectfd) {
 // second half of rembash protocol
 // read and verify secret
 int protocol_receive_secret(int connectfd) {
-    return 0;
-}
-
-// performs the server end of the rembash protocol
-// returns 0, or -1 on failure
-int protocol(int connect_fd) {
-    const char * const rembash = "<rembash>\n";
     const char * const error = "<error>\n";
     const char * const ok = "<ok>\n";
     const char * const secret = "<" SECRET ">\n";
-
     char buff[4096];
     int nread;
-    timer_t timerid;
-    struct itimerspec ts;
-    struct sigevent sev;
-
-    // set up timer
-    ts.it_value.tv_sec = TIMEOUT;
-    sev.sigev_notify = SIGEV_THREAD_ID;
-    sev.sigev_signo = SIGALRM;
-    sev._sigev_un._tid = syscall(SYS_gettid); // timer_create wants kernel tid
-
-    if (timer_create(CLOCK_REALTIME, &sev, &timerid) == -1) {
-        DTRACE("%d: Error creating the timer: %s\n", getpid(), strerror(errno));
-        return -1;
-    }
-
-    // write <rembash>\n
-    if (write(connect_fd, rembash, strlen(rembash)) == -1) {
-        DTRACE("%d: Error writing <rembash>: %s\n", getpid(), strerror(errno));
-        return -1;
-    }
-    DTRACE("%d: Wrote %s", getpid(), rembash);
-
-    if (timer_settime(timerid, 0, &ts, NULL) == -1) {
-        DTRACE("%d: Error setting the timer: %s\n", getpid(), strerror(errno));
-        return -1;
-    }
 
     // read <SECRET>\n
-    if ((nread = read(connect_fd, buff, 4096)) == -1) {
-        if (errno == EINTR) {
-            DTRACE("%d: Timer expired\n", getpid());
-        } else {
-            DTRACE("%d: Error reading <SECRET>: %s\n", getpid(), strerror(errno));
-        }
+    if ((nread = read(connectfd, buff, 4096)) == -1) {
+        DTRACE("%d: Error reading <SECRET>: %s\n", getpid(), strerror(errno));
         return -1;
     }
     buff[nread] = '\0';
     DTRACE("%d: Read %s", getpid(), buff);
 
-    // disarm the timer
-    if (timer_delete(timerid) == -1) {
-        DTRACE("%d: Error disarming timer: %s\n", getpid(), strerror(errno));
-        return -1;
-    }
-
+    
     if (strcmp(buff, secret) != 0) {
         // write <error>\n
         DTRACE("%d: rembashd: invalid secret from client\n", getpid());
-        if (write(connect_fd, error, strlen(error)) == -1) {
+        if (write(connectfd, error, strlen(error)) == -1) {
             DTRACE("%d: rembashd: Error writing <error>: %s\n", getpid(), strerror(errno));
         }
         DTRACE("%d: Wrote %s", getpid(), error);
@@ -238,14 +211,14 @@ int protocol(int connect_fd) {
     }
 
     // write <ok>\n
-    if (write(connect_fd, ok, strlen(ok)) == -1) {
+    if (write(connectfd, ok, strlen(ok)) == -1) {
         DTRACE("%d: Error writing <ok>: %s\n", getpid(), strerror(errno));
         return -1;
     }
     DTRACE("%d: Wrote %s", getpid(), ok);
 
     return 0;
-} // end protocol()
+}
 
 // function to create and set up a server socket
 // returns the socket file descriptor,
