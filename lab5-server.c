@@ -103,12 +103,6 @@ int *setup() {
         return NULL;
     }
 
-    // set close on exec on listening server
-    if (fcntl(sockfd, F_SETFD, FD_CLOEXEC) == -1) {
-        DTRACE("%d: Error setting close on exec on listening server: %s\n", getpid(), strerror(errno));
-        return NULL;
-    }
-
     DTRACE("%d: Listening socket fd=%d created\n", getpid(), sockfd);
 
     // ignore SIGCHLD
@@ -137,6 +131,7 @@ int *setup() {
         return NULL;
     }
 
+    // add listening socket to the epoll
     if (epoll_add(epfd, sockfd) == -1) {
         return NULL;
     }
@@ -208,7 +203,7 @@ int setup_server_socket(int port) {
     int sockfd;
 
     // create the socket
-    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+    if ((sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)) == -1) {
         DTRACE("%d: Error creating socket: %s\n", getpid(), strerror(errno));
         return -1;
     }
@@ -328,7 +323,8 @@ void worker_function(int task) {
 
     // if the event is a new connection
     if (task == sockfd) {
-        connectfd = accept(task, (struct sockaddr *) NULL, NULL); 
+        connectfd = accept4(task, (struct sockaddr *) NULL, NULL, SOCK_CLOEXEC);
+        //connectfd = accept(task, (struct sockaddr *) NULL, NULL); 
         client_init(epfd, connectfd);
         return;
     }
