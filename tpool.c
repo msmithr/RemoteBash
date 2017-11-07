@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <signal.h>
 
-#define TASKS_PER_THREAD 100
+#define TASKS_PER_THREAD 1
 
 typedef struct tpool {
     int front;  // front of queue
@@ -39,8 +39,10 @@ static void enqueue(int elem) {
 
 // blindly remove an element from the queue
 static int dequeue() {
+    int result = tpool.data[tpool.front];    
     tpool.front = (tpool.front + 1) % tpool.cap;
-    return tpool.data[(tpool.front - 1) % tpool.cap];
+    return result;
+    //return tpool.data[(tpool.front - 1) % tpool.cap];
 }
 
 // function to be called by worker threads

@@ -347,10 +347,17 @@ void worker_function(int task) {
         case ESTABLISHED:
             fromfd = task;
             tofd = (fromfd == client->sockfd) ? client->ptyfd : client->sockfd;
-            DTRACE("Transfering data from %d to %d\n", fromfd, tofd);
-            nread = read(fromfd, buff, 4096);
+            if ((nread = read(fromfd, buff, 4096)) == -1) {
+                DTRACE("Failed to read from %d\n", fromfd);
+                client->state = TERMINATED;
+                break;
+            }
             buff[nread] = '\0';
-            write(tofd, buff, nread);
+            if (write(tofd, buff, nread) == -1) {
+                DTRACE("Failed to write to %d\n", tofd);
+                client->state = TERMINATED;
+                break;
+            }
             break;
         case TERMINATED:
             break;
