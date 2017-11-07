@@ -59,15 +59,15 @@ int client_init(int epfd, int connectfd);
 
 // global variables
 client_object *fdmap[(MAX_NUM_CLIENTS * 2) + 6]; 
+int sockfd;
+int epfd;
 
 int main(int argc, char *argv[]) {
 
     DTRACE("%d: Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
 
-    int *setup_result, sockfd, epfd, readyfd, eventfd, connectfd;
+    int *setup_result, readyfd;
     struct epoll_event evlist[MAX_NUM_CLIENTS*2];
-    client_object *client;
-    char buff[4096];
 
     // generic setup
     if ((setup_result = setup()) == NULL) {
@@ -82,27 +82,8 @@ int main(int argc, char *argv[]) {
         readyfd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS*2, -1);
 
         for (int i = 0; i < readyfd; i++) {
-            eventfd = evlist[i].data.fd; 
-
-            // if the event is a new connection
-            if (eventfd == sockfd) {
-                connectfd = accept(eventfd, (struct sockaddr *) NULL, NULL); 
-                client_init(epfd, connectfd);
-                continue;
-            }
-            
-            client = fdmap[evlist[i].data.fd];
-            switch (client->state) {
-                case NEW:
-                    protocol_receive_secret(eventfd);
-                    client->state = ESTABLISHED;
-                    break;
-                case ESTABLISHED:
-                    break;
-                default:
-                    printf("Hello?\n");
-                    break;
-            }
+            // hand task to the thread pool
+            tpool_add_task(evlist[i].data.fd);
         }
     }
 
@@ -341,7 +322,42 @@ void sigalrm_handler(int signum) {
 } // end sigalrm_handler()
 
 void worker_function(int task) {
-    printf("%d\n", task);
+    int tofd, fromfd, nread, connectfd;
+    char buff[4096];
+    client_object *client;
+
+    // if the event is a new connection
+    if (task == sockfd) {
+        connectfd = accept(task, (struct sockaddr *) NULL, NULL); 
+        client_init(epfd, connectfd);
+        return;
+    }
+    
+    client = fdmap[task];
+    switch (client->state) {
+        case NEW:
+            if (protocol_receive_secret(task) == -1) {
+                DTRACE("Secret retreival failed\n");
+                client->state = TERMINATED;
+            } else {
+                DTRACE("Connection established with %d\n", task);
+                client->state = ESTABLISHED;
+            }
+            break;
+        case ESTABLISHED:
+            fromfd = task;
+            tofd = (fromfd == client->sockfd) ? client->ptyfd : client->sockfd;
+            DTRACE("Transfering data from %d to %d\n", fromfd, tofd);
+            nread = read(fromfd, buff, 4096);
+            buff[nread] = '\0';
+            write(tofd, buff, nread);
+            break;
+        case TERMINATED:
+            break;
+        default:
+            printf("Hello?\n");
+            break;
+    }
 }
 
 // add a given fd to a given epoll
@@ -349,7 +365,7 @@ void worker_function(int task) {
 int epoll_add(int epfd, int fd) {
     struct epoll_event event;   
     event.data.fd = fd;
-    event.events = EPOLLIN;
+    event.events = EPOLLIN | EPOLLET;
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event) == -1) {
         DTRACE("%d: Failed to add fd=%d to epoll\n", getpid(), fd);
         return -1;
@@ -379,6 +395,8 @@ int client_init(int epfd, int connectfd) {
     client->ptyfd = mfd;
     client->state = NEW;
 
+    DTRACE("%d, %d\n", connectfd, mfd);
+    DTRACE("Client object created: sockfd=%d, ptyfd=%d\n", client->sockfd, client->ptyfd);
     // set up mapping
     fdmap[connectfd] = client;
     fdmap[mfd] = client;
