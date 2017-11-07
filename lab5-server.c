@@ -202,8 +202,8 @@ int protocol_receive_secret(int connectfd) {
 int setup_server_socket(int port) {
     int sockfd;
 
-    // create the socket
-    if ((sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0)) == -1) {
+    // create the listening socket
+    if ((sockfd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)) == -1) {
         DTRACE("%d: Error creating socket: %s\n", getpid(), strerror(errno));
         return -1;
     }
@@ -248,8 +248,15 @@ int setuppty(pid_t *pid) {
         return -1;
     }
 
+    // close on exec
     if (fcntl(mfd, F_SETFD, FD_CLOEXEC) == -1) {
         DTRACE("%d: Error setting mfd to close on exec: %s\n", getpid(), strerror(errno));
+        return -1;
+    }
+
+    // nonblocking
+    if (fcntl(mfd, F_SETFL, O_NONBLOCK) == -1) {
+        DTRACE("%d: Error setting mfd to nonblocking: %s\n", getpid(), strerror(errno));
         return -1;
     }
 
@@ -323,7 +330,7 @@ void worker_function(int task) {
 
     // if the event is a new connection
     if (task == sockfd) {
-        connectfd = accept4(task, (struct sockaddr *) NULL, NULL, SOCK_CLOEXEC);
+        connectfd = accept4(task, (struct sockaddr *) NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
         //connectfd = accept(task, (struct sockaddr *) NULL, NULL); 
         client_init(epfd, connectfd);
         return;
