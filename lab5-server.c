@@ -54,7 +54,7 @@ int protocol_receive_secret(int connectfd);
 int setuppty(pid_t *pid);
 void sigalrm_handler(int signum);
 void worker_function(int task);
-int epoll_add(int epfd, int fd);
+int epoll_add(int epfd, int fd, int reset);
 int client_init(int epfd, int connectfd);
 void cleanup_client(client_object *client);
 
@@ -133,7 +133,7 @@ int *setup() {
     }
 
     // add listening socket to the epoll
-    if (epoll_add(epfd, sockfd) == -1) {
+    if (epoll_add(epfd, sockfd, 0) == -1) {
         return NULL;
     }
 
@@ -332,8 +332,8 @@ void worker_function(int task) {
     // if the event is a new connection
     if (task == sockfd) {
         connectfd = accept4(task, (struct sockaddr *) NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
-        //connectfd = accept(task, (struct sockaddr *) NULL, NULL); 
         client_init(epfd, connectfd);
+        epoll_add(epfd, task, 1);
         return;
     }
     
@@ -344,10 +344,11 @@ void worker_function(int task) {
                 DTRACE("Secret retreival failed\n");
                 client->state = TERMINATED;
                 cleanup_client(client);
-            } else {
-                DTRACE("Connection established with %d\n", task);
-                client->state = ESTABLISHED;
+                break;
             }
+            DTRACE("Connection established with %d\n", task);
+            client->state = ESTABLISHED;
+            epoll_add(epfd, task, 1); 
             break;
         case ESTABLISHED:
             fromfd = task;
@@ -363,6 +364,7 @@ void worker_function(int task) {
                 cleanup_client(client);
                 break;
             }
+            epoll_add(epfd, task, 1); 
             break;
         case TERMINATED:
             break;
@@ -373,12 +375,19 @@ void worker_function(int task) {
 }
 
 // add a given fd to a given epoll
+// reset: is this already in the epoll, and just needs reset?
 // returns 0, or -1 on failure
-int epoll_add(int epfd, int fd) {
+int epoll_add(int epfd, int fd, int reset) {
+    int op;
+    if (reset) {
+        op = EPOLL_CTL_MOD;
+    } else {
+        op = EPOLL_CTL_ADD;
+    }
     struct epoll_event event;   
     event.data.fd = fd;
-    event.events = EPOLLIN | EPOLLET;
-    if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &event) == -1) {
+    event.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+    if (epoll_ctl(epfd, op, fd, &event) == -1) {
         DTRACE("%d: Failed to add fd=%d to epoll\n", getpid(), fd);
         return -1;
     }
@@ -414,12 +423,12 @@ int client_init(int epfd, int connectfd) {
     fdmap[mfd] = client;
     
     // add connection to epoll
-    if (epoll_add(epfd, connectfd) == -1) {
+    if (epoll_add(epfd, connectfd, 0) == -1) {
         return -1;
     }
 
     // add mfd to epoll
-    if (epoll_add(epfd, mfd) == -1) {
+    if (epoll_add(epfd, mfd, 0) == -1) {
         return -1;
     }
 
@@ -434,6 +443,7 @@ void cleanup_client(client_object *client) {
     epoll_ctl(epfd, EPOLL_CTL_DEL, client->ptyfd, NULL);
     free(client);
 }
+
 
 //   _____ 
 //  < EOF >
