@@ -56,6 +56,7 @@ void sigalrm_handler(int signum);
 void worker_function(int task);
 int epoll_add(int epfd, int fd);
 int client_init(int epfd, int connectfd);
+void cleanup_client(client_object *client);
 
 // global variables
 client_object *fdmap[(MAX_NUM_CLIENTS * 2) + 6]; 
@@ -342,6 +343,7 @@ void worker_function(int task) {
             if (protocol_receive_secret(task) == -1) {
                 DTRACE("Secret retreival failed\n");
                 client->state = TERMINATED;
+                cleanup_client(client);
             } else {
                 DTRACE("Connection established with %d\n", task);
                 client->state = ESTABLISHED;
@@ -352,13 +354,13 @@ void worker_function(int task) {
             tofd = (fromfd == client->sockfd) ? client->ptyfd : client->sockfd;
             if ((nread = read(fromfd, buff, 4096)) == -1) {
                 DTRACE("Failed to read from %d\n", fromfd);
-                client->state = TERMINATED;
+                cleanup_client(client);
                 break;
             }
             buff[nread] = '\0';
             if (write(tofd, buff, nread) == -1) {
                 DTRACE("Failed to write to %d\n", tofd);
-                client->state = TERMINATED;
+                cleanup_client(client);
                 break;
             }
             break;
@@ -422,6 +424,15 @@ int client_init(int epfd, int connectfd) {
     }
 
     return 0;
+}
+
+// kill and clean up a client connection
+void cleanup_client(client_object *client) {
+    close(client->sockfd);
+    close(client->ptyfd);
+    epoll_ctl(epfd, EPOLL_CTL_DEL, client->sockfd, NULL);
+    epoll_ctl(epfd, EPOLL_CTL_DEL, client->ptyfd, NULL);
+    free(client);
 }
 
 //   _____ 
