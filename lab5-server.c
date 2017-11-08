@@ -54,6 +54,8 @@ int protocol_receive_secret(int connectfd);
 int setuppty(pid_t *pid);
 void sigalrm_handler(int signum);
 void worker_function(int task);
+void worker_established(int task);
+void worker_new(int task);
 int epoll_add(int epfd, int fd, int reset);
 int client_init(int epfd, int connectfd);
 void cleanup_client(client_object *client);
@@ -81,9 +83,14 @@ int main(int argc, char *argv[]) {
 
     while (1) {
         readyfd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS*2, -1);
-
         for (int i = 0; i < readyfd; i++) {
+            if (evlist[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+                DTRACE("ERR/HUP/RDHUP on a client\n");
+                cleanup_client(fdmap[evlist[i].data.fd]);
+                continue;
+            }
             // hand task to the thread pool
+            
             tpool_add_task(evlist[i].data.fd);
         }
     }
@@ -325,8 +332,7 @@ void sigalrm_handler(int signum) {
 } // end sigalrm_handler()
 
 void worker_function(int task) {
-    int tofd, fromfd, nread, connectfd;
-    char buff[4096];
+    int connectfd;
     client_object *client;
 
     // if the event is a new connection
@@ -340,38 +346,63 @@ void worker_function(int task) {
     client = fdmap[task];
     switch (client->state) {
         case NEW:
-            if (protocol_receive_secret(task) == -1) {
-                DTRACE("Secret retreival failed\n");
-                client->state = TERMINATED;
-                cleanup_client(client);
-                break;
-            }
-            DTRACE("Connection established with %d\n", task);
-            client->state = ESTABLISHED;
-            epoll_add(epfd, task, 1); 
+            worker_new(task);
             break;
+
         case ESTABLISHED:
-            fromfd = task;
-            tofd = (fromfd == client->sockfd) ? client->ptyfd : client->sockfd;
-            if ((nread = read(fromfd, buff, 4096)) == -1) {
-                DTRACE("Failed to read from %d\n", fromfd);
-                cleanup_client(client);
-                break;
-            }
-            buff[nread] = '\0';
-            if (write(tofd, buff, nread) == -1) {
-                DTRACE("Failed to write to %d\n", tofd);
-                cleanup_client(client);
-                break;
-            }
-            epoll_add(epfd, task, 1); 
+            worker_established(task);
             break;
+
         case TERMINATED:
             break;
         default:
             printf("Hello?\n");
             break;
     }
+}
+
+// receive secret from client and establish connection
+void worker_new(int task) {
+    client_object *client = fdmap[task];
+    if (protocol_receive_secret(task) == -1) {
+        DTRACE("Secret retreival failed\n");
+        client->state = TERMINATED;
+        cleanup_client(client);
+        return;
+    }
+    DTRACE("Connection established with %d\n", task);
+    client->state = ESTABLISHED;
+    epoll_add(epfd, task, 1); 
+    return;
+} // end worker_new()
+
+void worker_established(int task) {
+    int fromfd, tofd, nread;
+    char buff[4096];
+
+    client_object *client = fdmap[task];
+    fromfd = task;
+    tofd = (fromfd == client->sockfd) ? client->ptyfd : client->sockfd;
+    if ((nread = read(fromfd, buff, 4096)) == -1) {
+        DTRACE("Failed to read from %d\n", fromfd);
+        cleanup_client(client);
+        return;
+    }
+    buff[nread] = '\0';
+    if (write(tofd, buff, nread) == -1) {
+        if (errno == EAGAIN) {
+            errno = 0; // reset errno
+            DTRACE("Partial write\n");
+            client->state = UNWRITTEN;
+        } else {
+            DTRACE("Failed to write to %d\n", tofd);
+            cleanup_client(client);
+            return;
+        }    
+    }
+    epoll_add(epfd, task, 1); 
+    return;
+
 }
 
 // add a given fd to a given epoll
@@ -386,7 +417,7 @@ int epoll_add(int epfd, int fd, int reset) {
     }
     struct epoll_event event;   
     event.data.fd = fd;
-    event.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+    event.events = EPOLLIN | EPOLLET | EPOLLONESHOT | EPOLLRDHUP;
     if (epoll_ctl(epfd, op, fd, &event) == -1) {
         DTRACE("%d: Failed to add fd=%d to epoll\n", getpid(), fd);
         return -1;
