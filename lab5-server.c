@@ -354,9 +354,11 @@ void worker_function(int task) {
             break;
 
         case TERMINATED:
+            // client is terminated -> do nothing
             break;
+
         default:
-            printf("Hello?\n");
+            DTRACE("Error: Invalid client state\n");
             break;
     }
 }
