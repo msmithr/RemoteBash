@@ -43,7 +43,7 @@ typedef struct client_object {
     client_state state;
     int ptyfd;
     int sockfd;
-    char *data;
+    char data[4096];
 } client_object;
 
 // function prototypes
@@ -55,8 +55,9 @@ int setuppty(pid_t *pid);
 void sigalrm_handler(int signum);
 void worker_function(int task);
 void worker_established(int task);
+void worker_unwritten(int task);
 void worker_new(int task);
-int epoll_add(int epfd, int fd, int reset);
+int epoll_add(int epfd, int fd, int mode);
 int client_init(int epfd, int connectfd);
 void cleanup_client(client_object *client);
 
@@ -353,6 +354,10 @@ void worker_function(int task) {
             worker_established(task);
             break;
 
+        case UNWRITTEN:
+            worker_unwritten(task);
+            break;
+
         case TERMINATED:
             // client is terminated -> do nothing
             break;
@@ -379,49 +384,114 @@ void worker_new(int task) {
 } // end worker_new()
 
 void worker_established(int task) {
-    int fromfd, tofd, nread;
+    int fromfd, tofd, nread, nwrote;
     char buff[4096];
 
     client_object *client = fdmap[task];
     fromfd = task;
     tofd = (fromfd == client->sockfd) ? client->ptyfd : client->sockfd;
     if ((nread = read(fromfd, buff, 4096)) == -1) {
-        DTRACE("Failed to read from %d\n", fromfd);
-        cleanup_client(client);
+        if (errno == EAGAIN) {
+            epoll_add(epfd, task, 1);
+            errno = 0; // reset errno
+        } else {
+            DTRACE("Failed to read from %d\n", fromfd);
+            cleanup_client(client);
+        }
         return;
     }
     buff[nread] = '\0';
-    if (write(tofd, buff, nread) == -1) {
+
+    if ((nwrote = write(tofd, buff, nread)) == -1) {
         if (errno == EAGAIN) {
             errno = 0; // reset errno
-            DTRACE("Partial write\n");
-            client->state = UNWRITTEN;
+            epoll_add(epfd, task, 1);
+            return;
         } else {
             DTRACE("Failed to write to %d\n", tofd);
             cleanup_client(client);
             return;
         }    
     }
+
+    // partial write
+    if (nwrote < nread) {
+        DTRACE("Partial write!\n");
+        DTRACE("Read %d\n Wrote %d\n", nread, nwrote);
+        client->state = UNWRITTEN;
+
+        // store info in the array
+        int j = 0;
+        for (int i = nwrote; i < nread; i++) {
+            client->data[j++] = buff[i];
+        }
+        client->data[j] = '\0';
+    
+        // add sockfd to epoll listening for EPOLLOUT
+        epoll_add(epfd, client->sockfd, 2);
+    }
     epoll_add(epfd, task, 1); 
     return;
 
-}
+} // end worker_established
+
+void worker_unwritten(int task) {
+    int nwrote;
+    client_object *client = fdmap[task];
+
+    if ((nwrote = write(client->sockfd, client->data, strlen(client->data))) == -1) {
+        if (errno == EAGAIN) {
+            errno = 0;
+        } else {
+            DTRACE("Unable to write to %d\n", client->sockfd);
+            cleanup_client(client);
+        }
+    }
+
+    if (nwrote < strlen(client->data)) {
+        int j = 0;
+        for (int i = nwrote; i < strlen(client->data); i++) {
+            client->data[j] = client->data[i++];
+        }
+        client->data[j] = '\0';
+        epoll_add(epfd, client->sockfd, 2);
+    } else {
+        client->state = ESTABLISHED;
+        epoll_add(epfd, client->sockfd, 1);
+        epoll_add(epfd, client->ptyfd, 1);
+    }
+
+    printf("I am here,\n");
+} // end worker_unwritten()
 
 // add a given fd to a given epoll
-// reset: is this already in the epoll, and just needs reset?
+// mode: 0: normal,
+//       1: already in epoll, just needs reset
+//       2: reset with EPOLLOUT
 // returns 0, or -1 on failure
-int epoll_add(int epfd, int fd, int reset) {
-    int op;
-    if (reset) {
-        op = EPOLL_CTL_MOD;
-    } else {
-        op = EPOLL_CTL_ADD;
+int epoll_add(int epfd, int fd, int mode) {
+    int op, events;
+
+    switch (mode) {
+        case 0:
+            op = EPOLL_CTL_ADD;
+            events = EPOLLIN | EPOLLET | EPOLLONESHOT | EPOLLRDHUP;
+            break;
+        case 1:
+            op = EPOLL_CTL_MOD;
+            events = EPOLLIN | EPOLLET | EPOLLONESHOT | EPOLLRDHUP;
+            break;
+        case 2:
+            op = EPOLL_CTL_MOD;
+            events = EPOLLOUT | EPOLLET | EPOLLONESHOT | EPOLLRDHUP;
+            break;
     }
+
     struct epoll_event event;   
     event.data.fd = fd;
-    event.events = EPOLLIN | EPOLLET | EPOLLONESHOT | EPOLLRDHUP;
+    event.events = events;
     if (epoll_ctl(epfd, op, fd, &event) == -1) {
-        DTRACE("%d: Failed to add fd=%d to epoll\n", getpid(), fd);
+        DTRACE("%d: Failed to add fd=%d to epoll: %s\n", getpid(), fd, strerror(errno));
         return -1;
     }
     return 0;
