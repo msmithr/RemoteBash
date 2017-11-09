@@ -31,12 +31,21 @@
 #define MAX_NUM_CLIENTS 10000
 #define TIMEOUT 5 
 
+// preprocessor definitions for epoll_add
+#define ADD_EPOLLIN 0
+#define ADD_EPOLLOUT 1
+#define RESET_EPOLLIN 2
+#define RESET_EPOLLOUT 3
+
 // type definitions
 typedef enum client_state {
-    NEW,
-    ESTABLISHED,
-    UNWRITTEN,
-    TERMINATED,
+    STATE_NEW,
+    STATE_SECRET,
+    STATE_OK,
+    STATE_ERROR,
+    STATE_ESTABLISHED,
+    STATE_UNWRITTEN,
+    STATE_TERMINATED,
 } client_state;
 
 typedef struct client_object {
@@ -50,8 +59,11 @@ typedef struct client_object {
 // function prototypes
 int *setup();
 int setup_server_socket(int port);
-int protocol_init(int conncetfd);
-int protocol_receive_secret(int connectfd);
+void protocol_init(int connectfd);
+void protocol_receive_secret(int connectfd);
+void protocol_send_ok(int connectfd);
+void protocol_send_error(int connectfd);
+int pty_init(client_object *client);
 int setuppty(pid_t *pid);
 void sigalrm_handler(int signum);
 void worker_function(int task);
@@ -142,7 +154,7 @@ int *setup() {
     }
 
     // add listening socket to the epoll
-    if (epoll_add(epfd, sockfd, 0) == -1) {
+    if (epoll_add(epfd, sockfd, ADD_EPOLLIN) == -1) {
         return NULL;
     }
 
@@ -157,54 +169,99 @@ int *setup() {
     return result;
 } // end setup()
 
-// first half of rembash protocol 
 // write protocol id
-int protocol_init(int connectfd) {
+void protocol_init(int connectfd) {
     const char * const rembash = "<rembash>\n";
-    if (write(connectfd, rembash, strlen(rembash)) == -1) {
-        DTRACE("%d: Error writing <rembash>: %s\n", getpid(), strerror(errno));
-        return -1;
-    }
-    return 0;
-}
+    client_object *client = fdmap[connectfd];
 
-// second half of rembash protocol
+    if (write(connectfd, rembash, strlen(rembash)) == -1) {
+        if (errno == EAGAIN) {
+            errno = 0;
+            epoll_add(epfd, connectfd, RESET_EPOLLOUT);
+            return;
+        }
+        DTRACE("%d: Error writing <rembash>: %s\n", getpid(), strerror(errno));
+        close(client->sockfd);
+        epoll_ctl(epfd, EPOLL_CTL_DEL, client->sockfd, NULL);
+        client->state = STATE_TERMINATED;
+        free(client);
+        return;
+    }
+    client->state = STATE_SECRET;
+    epoll_add(epfd, connectfd, RESET_EPOLLIN);
+    return;
+} // end protocol_init()
+
 // read and verify secret
-int protocol_receive_secret(int connectfd) {
-    const char * const error = "<error>\n";
-    const char * const ok = "<ok>\n";
+void protocol_receive_secret(int connectfd) {
     const char * const secret = "<" SECRET ">\n";
     char buff[4096];
     int nread;
+    client_object *client = fdmap[connectfd];
 
     // read <SECRET>\n
     if ((nread = read(connectfd, buff, 4096)) == -1) {
-        DTRACE("%d: Error reading <SECRET>: %s\n", getpid(), strerror(errno));
-        return -1;
+        if (errno == EAGAIN) {
+            errno = 0;
+            epoll_add(epfd, connectfd, RESET_EPOLLIN);
+            return;
+        } 
+        client->state = STATE_TERMINATED;
+        return;
     }
     buff[nread] = '\0';
     DTRACE("%d: Read %s", getpid(), buff);
-
     
+    // state = STATE_ERROR;
     if (strcmp(buff, secret) != 0) {
+        client->state = STATE_ERROR;
         // write <error>\n
         DTRACE("%d: rembashd: invalid secret from client\n", getpid());
-        if (write(connectfd, error, strlen(error)) == -1) {
-            DTRACE("%d: rembashd: Error writing <error>: %s\n", getpid(), strerror(errno));
-        }
-        DTRACE("%d: Wrote %s", getpid(), error);
-        return -1;
+        return;
+    } else {
+        client->state = STATE_OK;
     }
 
-    // write <ok>\n
+    epoll_add(epfd, connectfd, RESET_EPOLLOUT);
+    return;
+} // end protocol_receive_secret()
+
+void protocol_send_ok(int connectfd) {
+    const char * const ok = "<ok>\n";
+
+    client_object *client = fdmap[connectfd];
     if (write(connectfd, ok, strlen(ok)) == -1) {
-        DTRACE("%d: Error writing <ok>: %s\n", getpid(), strerror(errno));
-        return -1;
+        if (errno == EAGAIN) {
+            epoll_add(epfd, connectfd, RESET_EPOLLOUT);
+            errno = 0;
+            return;
+        } 
+        client->state = STATE_TERMINATED;
+        return;
     }
-    DTRACE("%d: Wrote %s", getpid(), ok);
+    client->state = STATE_ESTABLISHED;
+    epoll_add(epfd, connectfd, RESET_EPOLLIN);
+    pty_init(client);
+    return;
+} // end protocol_send_ok()
 
-    return 0;
-}
+void protocol_send_error(int connectfd) {
+    const char * const error = "<error>\n";
+
+    client_object *client = fdmap[connectfd];
+
+    if (write(connectfd, error, strlen(error)) == -1) {
+        if (errno == EAGAIN) {
+            epoll_add(epfd, connectfd, RESET_EPOLLOUT);
+            errno = 0;
+            return;
+        }
+        client->state = STATE_TERMINATED;
+        return;
+    }
+    client->state = STATE_TERMINATED;
+    return;
+} // end protocol_send_error()
 
 // function to create and set up a server socket
 // returns the socket file descriptor,
@@ -341,25 +398,37 @@ void worker_function(int task) {
     if (task == sockfd) {
         connectfd = accept4(task, (struct sockaddr *) NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
         client_init(epfd, connectfd);
-        epoll_add(epfd, task, 1);
+        epoll_add(epfd, task, RESET_EPOLLIN);
         return;
     }
     
     client = fdmap[task];
     switch (client->state) {
-        case NEW:
-            worker_new(task);
+        case STATE_NEW:
+            protocol_init(task); 
             break;
 
-        case ESTABLISHED:
+        case STATE_SECRET:
+            protocol_receive_secret(task);
+            break;
+
+        case STATE_OK:
+            protocol_send_ok(task);
+            break;
+
+        case STATE_ERROR:
+            protocol_send_error(task);
+            break;
+
+        case STATE_ESTABLISHED:
             worker_established(task);
             break;
 
-        case UNWRITTEN:
+        case STATE_UNWRITTEN:
             worker_unwritten(task);
             break;
 
-        case TERMINATED:
+        case STATE_TERMINATED:
             // client is terminated -> do nothing
             break;
 
@@ -368,21 +437,6 @@ void worker_function(int task) {
             break;
     }
 }
-
-// receive secret from client and establish connection
-void worker_new(int task) {
-    client_object *client = fdmap[task];
-    if (protocol_receive_secret(task) == -1) {
-        DTRACE("Secret retreival failed\n");
-        client->state = TERMINATED;
-        cleanup_client(client);
-        return;
-    }
-    DTRACE("Connection established with %d\n", task);
-    client->state = ESTABLISHED;
-    epoll_add(epfd, task, 1); 
-    return;
-} // end worker_new()
 
 void worker_established(int task) {
     int fromfd, tofd, nread, nwrote;
@@ -393,7 +447,7 @@ void worker_established(int task) {
     tofd = (fromfd == client->sockfd) ? client->ptyfd : client->sockfd;
     if ((nread = read(fromfd, buff, 4096)) == -1) {
         if (errno == EAGAIN) {
-            epoll_add(epfd, task, 1);
+            epoll_add(epfd, task, RESET_EPOLLIN);
             errno = 0; // reset errno
         } else {
             DTRACE("Failed to read from %d\n", fromfd);
@@ -406,7 +460,7 @@ void worker_established(int task) {
     if ((nwrote = write(tofd, buff, nread)) == -1) {
         if (errno == EAGAIN) {
             errno = 0; // reset errno
-            epoll_add(epfd, task, 1);
+            epoll_add(epfd, task, RESET_EPOLLIN);
             return;
         } else {
             DTRACE("Failed to write to %d\n", tofd);
@@ -419,7 +473,7 @@ void worker_established(int task) {
     if (nwrote < nread) {
         DTRACE("Partial write!\n");
         DTRACE("Read %d\n Wrote %d\n", nread, nwrote);
-        client->state = UNWRITTEN;
+        client->state = STATE_UNWRITTEN;
         client->index = 0;
 
         // store info in the array
@@ -430,9 +484,9 @@ void worker_established(int task) {
         client->data[j] = '\0';
     
         // add sockfd to epoll listening for EPOLLOUT
-        epoll_add(epfd, client->sockfd, 2);
+        epoll_add(epfd, client->sockfd, RESET_EPOLLOUT);
     }
-    epoll_add(epfd, task, 1); 
+    epoll_add(epfd, task, RESET_EPOLLIN); 
     return;
 
 } // end worker_established
@@ -453,11 +507,11 @@ void worker_unwritten(int task) {
 
     if (nwrote < strlen(to_write)) {
         client->index += nwrote;
-        epoll_add(epfd, client->sockfd, 2);
+        epoll_add(epfd, client->sockfd, RESET_EPOLLOUT);
     } else {
-        client->state = ESTABLISHED;
-        epoll_add(epfd, client->sockfd, 1);
-        epoll_add(epfd, client->ptyfd, 1);
+        client->state = STATE_ESTABLISHED;
+        epoll_add(epfd, client->sockfd, RESET_EPOLLIN);
+        epoll_add(epfd, client->ptyfd, RESET_EPOLLIN);
     }
 
 } // end worker_unwritten()
@@ -466,21 +520,26 @@ void worker_unwritten(int task) {
 // mode: 0: normal,
 //       1: already in epoll, just needs reset
 //       2: reset with EPOLLOUT
+//       3: add with EPOLLOUT
 // returns 0, or -1 on failure
 int epoll_add(int epfd, int fd, int mode) {
     int op, events;
 
     switch (mode) {
-        case 0:
+        case ADD_EPOLLIN:
             op = EPOLL_CTL_ADD;
             events = EPOLLIN | EPOLLET | EPOLLONESHOT | EPOLLRDHUP;
             break;
-        case 1:
+        case RESET_EPOLLIN:
             op = EPOLL_CTL_MOD;
             events = EPOLLIN | EPOLLET | EPOLLONESHOT | EPOLLRDHUP;
             break;
-        case 2:
+        case RESET_EPOLLOUT:
             op = EPOLL_CTL_MOD;
+            events = EPOLLOUT | EPOLLET | EPOLLONESHOT | EPOLLRDHUP;
+            break;
+        case ADD_EPOLLOUT:
+            op = EPOLL_CTL_ADD;
             events = EPOLLOUT | EPOLLET | EPOLLONESHOT | EPOLLRDHUP;
             break;
     }
@@ -497,45 +556,44 @@ int epoll_add(int epfd, int fd, int mode) {
 
 // initialize a client
 int client_init(int epfd, int connectfd) {
-    int mfd;
-    pid_t ptyfd;
     client_object *client;
     
-    // perform first half of the procol with the client
-    if (protocol_init(connectfd) == -1) {
-        return -1;
-    } 
-
-    // create pty
-    if ((mfd = setuppty(&ptyfd)) == -1) {
-        return -1;
-    }
-   
     // create client object
     client = malloc(sizeof(client_object));
     client->sockfd = connectfd;
-    client->ptyfd = mfd;
-    client->state = NEW;
+    client->state = STATE_NEW;
     client->index = 0;
 
-    DTRACE("%d, %d\n", connectfd, mfd);
     DTRACE("Client object created: sockfd=%d, ptyfd=%d\n", client->sockfd, client->ptyfd);
     // set up mapping
     fdmap[connectfd] = client;
-    fdmap[mfd] = client;
     
-    // add connection to epoll
-    if (epoll_add(epfd, connectfd, 0) == -1) {
-        return -1;
-    }
-
-    // add mfd to epoll
-    if (epoll_add(epfd, mfd, 0) == -1) {
+    // add connection to epoll listening for EPOLLOUT
+    if (epoll_add(epfd, connectfd, ADD_EPOLLOUT) == -1) {
         return -1;
     }
 
     return 0;
 }
+
+// give a client a pty
+int pty_init(client_object *client) {
+    int mfd;
+    pid_t ptyfd;
+
+    if ((mfd = setuppty(&ptyfd)) == -1) {
+        return -1;
+    }
+
+    client->ptyfd = mfd;
+    fdmap[mfd] = client;
+
+    if (epoll_add(epfd, mfd, ADD_EPOLLIN) == -1) {
+        return -1;
+    }
+
+    return 0;
+} // end pty_init()
 
 // kill and clean up a client connection
 void cleanup_client(client_object *client) {
