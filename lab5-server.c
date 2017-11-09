@@ -1,4 +1,4 @@
-// CS 407 Lab 05 - Server                                                                                                          
+// CS 407 Lab 05 - Server
 // Client/server application allowing user to run bash
 // commands on a remote machine, similar to SSH or TELNET
 //
@@ -43,6 +43,7 @@ typedef struct client_object {
     client_state state;
     int ptyfd;
     int sockfd;
+    int index;
     char data[4096];
 } client_object;
 
@@ -419,6 +420,7 @@ void worker_established(int task) {
         DTRACE("Partial write!\n");
         DTRACE("Read %d\n Wrote %d\n", nread, nwrote);
         client->state = UNWRITTEN;
+        client->index = 0;
 
         // store info in the array
         int j = 0;
@@ -438,8 +440,9 @@ void worker_established(int task) {
 void worker_unwritten(int task) {
     int nwrote;
     client_object *client = fdmap[task];
+    char *to_write = &client->data[client->index];
 
-    if ((nwrote = write(client->sockfd, client->data, strlen(client->data))) == -1) {
+    if ((nwrote = write(client->sockfd, to_write, strlen(to_write))) == -1) {
         if (errno == EAGAIN) {
             errno = 0;
         } else {
@@ -448,12 +451,8 @@ void worker_unwritten(int task) {
         }
     }
 
-    if (nwrote < strlen(client->data)) {
-        int j = 0;
-        for (int i = nwrote; i < strlen(client->data); i++) {
-            client->data[j] = client->data[i++];
-        }
-        client->data[j] = '\0';
+    if (nwrote < strlen(to_write)) {
+        client->index += nwrote;
         epoll_add(epfd, client->sockfd, 2);
     } else {
         client->state = ESTABLISHED;
@@ -461,7 +460,6 @@ void worker_unwritten(int task) {
         epoll_add(epfd, client->ptyfd, 1);
     }
 
-    printf("I am here,\n");
 } // end worker_unwritten()
 
 // add a given fd to a given epoll
@@ -495,7 +493,7 @@ int epoll_add(int epfd, int fd, int mode) {
         return -1;
     }
     return 0;
-}
+} // end epoll_add()
 
 // initialize a client
 int client_init(int epfd, int connectfd) {
@@ -518,6 +516,7 @@ int client_init(int epfd, int connectfd) {
     client->sockfd = connectfd;
     client->ptyfd = mfd;
     client->state = NEW;
+    client->index = 0;
 
     DTRACE("%d, %d\n", connectfd, mfd);
     DTRACE("Client object created: sockfd=%d, ptyfd=%d\n", client->sockfd, client->ptyfd);
