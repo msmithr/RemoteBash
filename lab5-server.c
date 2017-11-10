@@ -31,12 +31,6 @@
 #define MAX_NUM_CLIENTS 10000
 #define TIMEOUT 5 
 
-// preprocessor definitions for epoll_add
-#define ADD_EPOLLIN 0
-#define ADD_EPOLLOUT 1
-#define RESET_EPOLLIN 2
-#define RESET_EPOLLOUT 3
-
 // type definitions
 typedef enum client_state {
     STATE_NEW,
@@ -47,6 +41,13 @@ typedef enum client_state {
     STATE_UNWRITTEN,
     STATE_TERMINATED,
 } client_state;
+
+typedef enum epoll_add_options {
+    ADD_EPOLLIN,
+    ADD_EPOLLOUT,
+    RESET_EPOLLIN,
+    RESET_EPOLLOUT,
+} epoll_add_options;
 
 typedef struct client_object {
     client_state state;
@@ -70,7 +71,7 @@ void worker_function(int task);
 void worker_established(int task);
 void worker_unwritten(int task);
 void worker_new(int task);
-int epoll_add(int epfd, int fd, int mode);
+int epoll_add(int epfd, int fd, epoll_add_options mode);
 int client_init(int epfd, int connectfd);
 void cleanup_client(client_object *client);
 
@@ -522,7 +523,7 @@ void worker_unwritten(int task) {
 //       2: reset with EPOLLOUT
 //       3: add with EPOLLOUT
 // returns 0, or -1 on failure
-int epoll_add(int epfd, int fd, int mode) {
+int epoll_add(int epfd, int fd, epoll_add_options mode) {
     int op, events;
 
     switch (mode) {
