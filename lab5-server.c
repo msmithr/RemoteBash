@@ -125,7 +125,6 @@ int main(int argc, char *argv[]) {
 // or NULL on failure
 int *setup() {
     int sockfd, epfd, timer_epfd;
-    struct sigaction act;
     static int result[3];
 
     // set up the server socket
@@ -444,7 +443,14 @@ void worker_function(int task) {
 
     // if the event is a new connection
     if (task == sockfd) {
-        connectfd = accept4(task, (struct sockaddr *) NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
+        if ((connectfd = accept4(task, (struct sockaddr *) NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK)) == -1) {
+            if (errno == EAGAIN) {
+                errno = 0;
+                epoll_add(epfd, task, RESET_EPOLLIN);
+                return;
+            }
+            DTRACE("Error accepting a client: %s\n", strerror(errno));
+        }
         client_init(epfd, connectfd);
         epoll_add(epfd, task, RESET_EPOLLIN);
         return;
@@ -610,6 +616,7 @@ int epoll_add(int epfd, int fd, epoll_add_options mode) {
 } // end epoll_add()
 
 // initialize a client
+// creates a client object and adds the sockfd to the epoll
 int client_init(int epfd, int connectfd) {
     client_object *client;
     
@@ -630,7 +637,7 @@ int client_init(int epfd, int connectfd) {
     }
 
     return 0;
-}
+} // end client_init()
 
 // give a client a pty
 int pty_init(client_object *client) {
@@ -659,7 +666,7 @@ void cleanup_client(client_object *client) {
     epoll_ctl(epfd, EPOLL_CTL_DEL, client->sockfd, NULL);
     epoll_ctl(epfd, EPOLL_CTL_DEL, client->ptyfd, NULL);
     free(client);
-}
+} // end cleanup_client()
 
 
 //   _____ 
