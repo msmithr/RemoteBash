@@ -32,6 +32,8 @@
 #define TIMEOUT 5 
 
 // type definitions
+
+// state enum for the client objects
 typedef enum client_state {
     STATE_NEW,
     STATE_SECRET,
@@ -42,6 +44,7 @@ typedef enum client_state {
     STATE_TERMINATED,
 } client_state;
 
+// options for the epoll_add function
 typedef enum epoll_add_options {
     ADD_EPOLLIN,
     ADD_EPOLLOUT,
@@ -49,12 +52,13 @@ typedef enum epoll_add_options {
     RESET_EPOLLOUT,
 } epoll_add_options;
 
+// client object
 typedef struct client_object {
     client_state state;
     int ptyfd;
     int sockfd;
-    int index;
-    char data[4096];
+    int index; // position in data buffer
+    char data[4096]; // data to be written to sockfd
 } client_object;
 
 // function prototypes
@@ -77,11 +81,10 @@ void cleanup_client(client_object *client);
 
 // global variables
 client_object *fdmap[(MAX_NUM_CLIENTS * 2) + 6]; 
-int sockfd;
-int epfd;
+int sockfd; // listening socket
+int epfd; // epoll fd
 
 int main(int argc, char *argv[]) {
-
     DTRACE("%d: Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
 
     int *setup_result, readyfd;
@@ -92,25 +95,26 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "rembashd: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }   
-    
     sockfd = setup_result[0];
     epfd = setup_result[1];
 
+    // epoll_wait loop
     while (1) {
         readyfd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS*2, -1);
         for (int i = 0; i < readyfd; i++) {
+            // if event is an error, kill client
             if (evlist[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
                 DTRACE("ERR/HUP/RDHUP on a client\n");
                 cleanup_client(fdmap[evlist[i].data.fd]);
-                continue;
-            }
-            // hand task to the thread pool
-            
-            tpool_add_task(evlist[i].data.fd);
-        }
-    }
+            } else {
+                // hand task to the thread pool
+                tpool_add_task(evlist[i].data.fd);
+            } // end if/else   
+        } // end for
+    } // end while
 
-    exit(EXIT_SUCCESS);
+    // should never get here
+    exit(EXIT_FAILURE);
 } // end main()
 
 // generic setup for the server
@@ -171,6 +175,7 @@ int *setup() {
 } // end setup()
 
 // write protocol id
+// state = STATE_NEW
 void protocol_init(int connectfd) {
     const char * const rembash = "<rembash>\n";
     client_object *client = fdmap[connectfd];
@@ -182,10 +187,7 @@ void protocol_init(int connectfd) {
             return;
         }
         DTRACE("%d: Error writing <rembash>: %s\n", getpid(), strerror(errno));
-        close(client->sockfd);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, client->sockfd, NULL);
-        client->state = STATE_TERMINATED;
-        free(client);
+        cleanup_client(client);
         return;
     }
     client->state = STATE_SECRET;
@@ -194,6 +196,7 @@ void protocol_init(int connectfd) {
 } // end protocol_init()
 
 // read and verify secret
+// state = STATE_SECRET
 void protocol_receive_secret(int connectfd) {
     const char * const secret = "<" SECRET ">\n";
     char buff[4096];
@@ -207,19 +210,19 @@ void protocol_receive_secret(int connectfd) {
             epoll_add(epfd, connectfd, RESET_EPOLLIN);
             return;
         } 
-        client->state = STATE_TERMINATED;
+        cleanup_client(client);
         return;
     }
     buff[nread] = '\0';
     DTRACE("%d: Read %s", getpid(), buff);
     
-    // state = STATE_ERROR;
     if (strcmp(buff, secret) != 0) {
+        // state = STATE_ERROR;
         client->state = STATE_ERROR;
-        // write <error>\n
         DTRACE("%d: rembashd: invalid secret from client\n", getpid());
         return;
     } else {
+        // state = STATE_OK;
         client->state = STATE_OK;
     }
 
@@ -237,12 +240,16 @@ void protocol_send_ok(int connectfd) {
             errno = 0;
             return;
         } 
-        client->state = STATE_TERMINATED;
+        cleanup_client(client);
         return;
     }
     client->state = STATE_ESTABLISHED;
+    if (pty_init(client) == -1) {
+        cleanup_client(client);
+        return;
+    }
+
     epoll_add(epfd, connectfd, RESET_EPOLLIN);
-    pty_init(client);
     return;
 } // end protocol_send_ok()
 
@@ -257,10 +264,10 @@ void protocol_send_error(int connectfd) {
             errno = 0;
             return;
         }
-        client->state = STATE_TERMINATED;
+        cleanup_client(client);
         return;
     }
-    client->state = STATE_TERMINATED;
+    cleanup_client(client);
     return;
 } // end protocol_send_error()
 
@@ -437,7 +444,7 @@ void worker_function(int task) {
             DTRACE("Error: Invalid client state\n");
             break;
     }
-}
+} // end worker_function()
 
 void worker_established(int task) {
     int fromfd, tofd, nread, nwrote;
@@ -562,6 +569,7 @@ int client_init(int epfd, int connectfd) {
     // create client object
     client = malloc(sizeof(client_object));
     client->sockfd = connectfd;
+    client->ptyfd = -1;
     client->state = STATE_NEW;
     client->index = 0;
 
@@ -598,6 +606,7 @@ int pty_init(client_object *client) {
 
 // kill and clean up a client connection
 void cleanup_client(client_object *client) {
+    DTRACE("Cleaning up client: %d\n", client->sockfd);
     close(client->sockfd);
     close(client->ptyfd);
     epoll_ctl(epfd, EPOLL_CTL_DEL, client->sockfd, NULL);
