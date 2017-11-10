@@ -71,7 +71,6 @@ void protocol_send_ok(int connectfd);
 void protocol_send_error(int connectfd);
 int pty_init(client_object *client);
 int setuppty(pid_t *pid);
-void sigalrm_handler(int signum);
 void worker_function(int task);
 void worker_established(int task);
 void worker_unwritten(int task);
@@ -145,14 +144,6 @@ int *setup() {
     // ignore SIGPIPE
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
         DTRACE("%d: Error setting SIGPIPE to ignore: %s\n", getpid(), strerror(errno));
-        return NULL;
-    }
-
-    // register sigalrm handler
-    act.sa_handler = sigalrm_handler;
-    act.sa_flags = 0;
-    if (sigaction(SIGALRM, &act, NULL) == -1) {
-        DTRACE("%d: Error registering SIGALRM handler: %s\n", getpid(), strerror(errno));
         return NULL;
     }
 
@@ -446,11 +437,6 @@ int setuppty(pid_t *pid) {
     exit(EXIT_FAILURE); 
 } // end setuppty()
 
-// signal handler for sigalrm
-void sigalrm_handler(int signum) {
-    DTRACE("%d: SIGALRM handler fired\n", getpid());
-} // end sigalrm_handler()
-
 void worker_function(int task) {
     int connectfd, readyfd;
     client_object *client;
@@ -591,11 +577,6 @@ void worker_unwritten(int task) {
 } // end worker_unwritten()
 
 // add a given fd to a given epoll
-// mode: 0: normal,
-//       1: already in epoll, just needs reset
-//       2: reset with EPOLLOUT
-//       3: add with EPOLLOUT
-// returns 0, or -1 on failure
 int epoll_add(int epfd, int fd, epoll_add_options mode) {
     int op, events;
 
