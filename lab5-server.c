@@ -483,6 +483,7 @@ void worker_function(int task) {
             }
             DTRACE("Error accepting a client: %s\n", strerror(errno));
         }
+        DTRACE("Client accepted: fd=%d\n", connectfd);
         client_init(epfd, connectfd);
         epoll_add(epfd, task, RESET_EPOLLIN);
         return;
@@ -569,8 +570,7 @@ void worker_established(int task) {
 
     // partial write
     if (nwrote < nread) {
-        DTRACE("Partial write!\n");
-        DTRACE("Read %d\n Wrote %d\n", nread, nwrote);
+        DTRACE("Partial write! Read %d\n Wrote %d\n", nread, nwrote);
         client->state = STATE_UNWRITTEN;
         client->index = 0;
 
