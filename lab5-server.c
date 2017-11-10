@@ -6,23 +6,18 @@
 //
 // author: Michael Smith
 
-#define _XOPEN_SOURCE 600
-#define _POSIX_C_SOURCE 199309L
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
+#include <signal.h>
+#include <pthread.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include <signal.h>
-#include <fcntl.h>
-#include <sys/wait.h>
 #include <sys/epoll.h>
-#include <pthread.h>
-#include <time.h>
-#include <sys/syscall.h>
 #include <sys/timerfd.h>
 #include "DTRACE.h"
 #include "tpool.h"
@@ -64,7 +59,7 @@ typedef struct client_object {
 } client_object;
 
 // function prototypes
-int *setup();
+int setup();
 int setup_server_socket(int port);
 void protocol_init(int connectfd);
 void protocol_receive_secret(int connectfd);
@@ -92,19 +87,18 @@ client_object slab[MAX_NUM_CLIENTS]; // slab allocation
 client_object *list_head = &slab[0];
 
 int main(int argc, char *argv[]) {
-    DTRACE("%d: Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
+    DTRACE("Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
 
-    int *setup_result, readyfd;
+    int readyfd;
     struct epoll_event evlist[MAX_NUM_CLIENTS*2];
 
     // generic setup
-    if ((setup_result = setup()) == NULL) {
+    if (setup() == -1) {
         fprintf(stderr, "rembashd: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }   
-    sockfd = setup_result[0];
-    epfd = setup_result[1];
-    timer_epfd = setup_result[2];
+
+    DTRACE("Entering epoll_wait loop\n");
 
     // epoll_wait loop
     while (1) {
@@ -126,72 +120,80 @@ int main(int argc, char *argv[]) {
 } // end main()
 
 // generic setup for the server
-// returns an array consisting of sockfd, epoll fd, timer epoll fd
-// or NULL on failure
-int *setup() {
-    int sockfd, epfd, timer_epfd;
-    static int result[3];
-
+// returns 0, or -1 on failure 
+int setup() {
     // set up the server socket
     if ((sockfd = setup_server_socket(PORT)) == -1) {
-        return NULL;
+        return -1;
     }
 
-    DTRACE("%d: Listening socket fd=%d created\n", getpid(), sockfd);
+    DTRACE("Listening socket fd=%d created\n", sockfd);
 
     // ignore SIGCHLD
     if (signal(SIGCHLD, SIG_IGN) == SIG_ERR) {
         DTRACE("%d: Error setting SIGCHLD to ignore: %s\n", getpid(), strerror(errno));
-        return NULL;
+        return -1;
     }
+
+    DTRACE("SIGCHLD ignored\n");
 
     // ignore SIGPIPE
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
         DTRACE("%d: Error setting SIGPIPE to ignore: %s\n", getpid(), strerror(errno));
-        return NULL;
+        return -1;
     }
+
+    DTRACE("SIGPIPE ignored\n");
 
     // create epoll
     if ((epfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
         DTRACE("%d: Error creating epoll: %s\n", getpid(), strerror(errno));
-        return NULL;
+        return -1;
     }
+
+    DTRACE("Epoll fd=%d created\n", epfd);
 
     // create timer epoll
     if ((timer_epfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
         DTRACE("%d: Error creating timer epoll: %s\n", getpid(), strerror(errno));
-        return NULL;
+        return -1;
     }
+
+    DTRACE("Timer epoll fd=%d created\n", timer_epfd);
 
     // add timer epoll to the epoll
     if (epoll_add(epfd, timer_epfd, ADD_EPOLLIN) == -1) {
-        return NULL; 
+        return -1; 
     }
+
+    DTRACE("Timer epoll fd=%d added to epoll fd=%d\n", timer_epfd, epfd);
 
     // add listening socket to the epoll
     if (epoll_add(epfd, sockfd, ADD_EPOLLIN) == -1) {
-        return NULL;
+        return -1;
     }
+
+    DTRACE("Listening socket fd=%d added to epoll fd=%d\n", sockfd, epfd);
 
     // create thread pool
     if (tpool_init(worker_function) == -1) {
         DTRACE("%d: Error initializing thread tpool: %s\n", getpid(), strerror(errno));
-        return NULL;
+        return -1;
     }
+
+    DTRACE("Thread pool initialized\n");
 
     // initialize the linked list
     for (int i = 0; i < MAX_NUM_CLIENTS-1; i++) {
         slab[i].next = &slab[i+1];
     }
 
-    result[0] = sockfd;
-    result[1] = epfd;
-    result[2] = timer_epfd;
-    return result;
+    DTRACE("Linked list of client memory initialized\n");
+
+    return 0;
 } // end setup()
 
-// write protocol id
-// state = STATE_NEW
+// STATE_NEW
 void protocol_init(int connectfd) {
     const char * const rembash = "<rembash>\n";
     client_object *client = fdmap[connectfd];
@@ -208,6 +210,8 @@ void protocol_init(int connectfd) {
         cleanup_client(client);
         return;
     }
+    DTRACE("Wrote <rembash> to fd=%d\n", connectfd);
+    DTRACE("Client fd=%d state=STATE_SECRET\n", connectfd);
     client->state = STATE_SECRET;
     epoll_add(epfd, connectfd, RESET_EPOLLIN);
 
@@ -215,6 +219,8 @@ void protocol_init(int connectfd) {
         DTRACE("Error creating timerfd: %s\n", strerror(errno));
         cleanup_client(client);
     }
+    
+    DTRACE("Created timerfd=%d\n", timerfd);
 
     // store timer/sockfd association
     timer_map[timerfd] = client->sockfd;
@@ -229,16 +235,17 @@ void protocol_init(int connectfd) {
         DTRACE("Error setting timerfd: %s\n", strerror(errno));
     }
 
+    DTRACE("Armed timerfd=%d\n", timerfd);
+
     // add the timer to the timer epoll
     if (epoll_add(timer_epfd, timerfd, ADD_EPOLLIN) == -1) {
         cleanup_client(client);
     }
-    DTRACE("Timer added to timer epoll\n");
+    DTRACE("Timerfd=%d added to timer epoll fd=%d\n", timerfd, timer_epfd);
     return;
 } // end protocol_init()
 
-// read and verify secret
-// state = STATE_SECRET
+// STATE_SECRET
 void protocol_receive_secret(int connectfd) {
     const char * const secret = "<" SECRET ">\n";
     char buff[4096];
@@ -253,11 +260,12 @@ void protocol_receive_secret(int connectfd) {
             epoll_add(epfd, connectfd, RESET_EPOLLIN);
             return;
         } 
+        DTRACE("Error reading from fd=%d: %s\n", connectfd, strerror(errno));
         cleanup_client(client);
         return;
     }
     buff[nread] = '\0';
-    DTRACE("%d: Read %s", getpid(), buff);
+    DTRACE("Read secret from fd=%d: %s", connectfd, buff);
 
     // disarm the timer
     timerfd = timer_map[connectfd];
@@ -268,21 +276,24 @@ void protocol_receive_secret(int connectfd) {
     timerfd_settime(timerfd, 0, &tspec, NULL);
     close(timerfd);
 
+    DTRACE("Timer fd=%d disarmed and closed\n", timerfd);
     
     if (strcmp(buff, secret) != 0) {
         // state = STATE_ERROR;
         client->state = STATE_ERROR;
-        DTRACE("%d: rembashd: invalid secret from client\n", getpid());
+        DTRACE("Client fd=%d state=STATE_ERROR\n", connectfd);
         return;
     } else {
         // state = STATE_OK;
         client->state = STATE_OK;
+        DTRACE("Client fd=%d state=STATE_OK\n", connectfd);
     }
 
     epoll_add(epfd, connectfd, RESET_EPOLLOUT);
     return;
 } // end protocol_receive_secret()
 
+// STATE_OK
 void protocol_send_ok(int connectfd) {
     const char * const ok = "<ok>\n";
 
@@ -296,7 +307,14 @@ void protocol_send_ok(int connectfd) {
         cleanup_client(client);
         return;
     }
+
+    DTRACE("Wrote <ok> to fd=%d\n", connectfd);
+
     client->state = STATE_ESTABLISHED;
+
+    DTRACE("Client fd=%d state=STATE_ESTABLISHED\n", connectfd);
+    DTRACE("Setting up PTY for client fd=%d\n", connectfd);
+
     if (pty_init(client) == -1) {
         cleanup_client(client);
         return;
@@ -306,6 +324,7 @@ void protocol_send_ok(int connectfd) {
     return;
 } // end protocol_send_ok()
 
+// STATE_ERROR
 void protocol_send_error(int connectfd) {
     const char * const error = "<error>\n";
 
@@ -317,9 +336,12 @@ void protocol_send_error(int connectfd) {
             errno = 0;
             return;
         }
+        DTRACE("Error writing to fd=%d\n", connectfd);
         cleanup_client(client);
         return;
     }
+    DTRACE("Wrote <error> to fd=%d\n", connectfd);
+
     cleanup_client(client);
     return;
 } // end protocol_send_error()
@@ -372,30 +394,30 @@ int setuppty(pid_t *pid) {
     pid_t slavepid;
 
     if ((mfd = posix_openpt(O_RDWR | O_NOCTTY)) == -1) {
-        DTRACE("%d: Error creating PTY: %s\n", getpid(), strerror(errno));
+        DTRACE("Error creating PTY: %s\n", strerror(errno));
         return -1;
     }
 
     // close on exec
     if (fcntl(mfd, F_SETFD, FD_CLOEXEC) == -1) {
-        DTRACE("%d: Error setting mfd to close on exec: %s\n", getpid(), strerror(errno));
+        DTRACE("Error setting mfd to close on exec: %s\n", strerror(errno));
         return -1;
     }
 
     // nonblocking
     if (fcntl(mfd, F_SETFL, O_NONBLOCK) == -1) {
-        DTRACE("%d: Error setting mfd to nonblocking: %s\n", getpid(), strerror(errno));
+        DTRACE("Error setting mfd to nonblocking: %s\n", strerror(errno));
         return -1;
     }
 
     if (unlockpt(mfd) == -1) {
-        DTRACE("%d: Error unlocking pty: %s\n", getpid(), strerror(errno));
+        DTRACE("Error unlocking pty: %s\n", strerror(errno));
         close(mfd);
         return -1;
     }
 
     if ((slavepointer = ptsname(mfd)) == NULL) {
-        DTRACE("%d: Error on ptsname: %s\n", getpid(), strerror(errno));
+        DTRACE("Error on ptsname: %s\n", strerror(errno));
         close(mfd);
         return -1;
     }
@@ -404,7 +426,7 @@ int setuppty(pid_t *pid) {
     strcpy(sname, slavepointer);
 
     if ((slavepid = fork()) == -1) {
-        DTRACE("%d: Error on fork: %s\n", getpid(), strerror(errno));
+        DTRACE("Error on fork: %s\n", strerror(errno));
         return -1;
     }
 
@@ -689,7 +711,7 @@ client_object *allocate_client() {
 void free_client(client_object *client) {
     client->next = list_head;
     list_head = client;
-}
+} // end free_client()
 
 
 //   _____ 
