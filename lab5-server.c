@@ -59,6 +59,7 @@ typedef struct client_object {
     int ptyfd;
     int sockfd;
     int index; // position in data buffer
+    struct client_object *next; // pointer to next, for the linked list
     char data[4096]; // data to be written to sockfd
 } client_object;
 
@@ -78,13 +79,17 @@ void worker_new(int task);
 int epoll_add(int epfd, int fd, epoll_add_options mode);
 int client_init(int epfd, int connectfd);
 void cleanup_client(client_object *client);
+client_object *allocate_client();
+void free_client(client_object *client);
 
 // global variables
 client_object *fdmap[(MAX_NUM_CLIENTS * 2) + 6]; 
+int timer_map[(MAX_NUM_CLIENTS * 2) + 6];
 int sockfd; // listening socket
 int epfd; // epoll fd
 int timer_epfd; // timer epoll fd
-int timer_map[(MAX_NUM_CLIENTS * 2) + 6];
+client_object slab[MAX_NUM_CLIENTS]; // slab allocation
+client_object *list_head = &slab[0];
 
 int main(int argc, char *argv[]) {
     DTRACE("%d: Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
@@ -172,6 +177,11 @@ int *setup() {
     if (tpool_init(worker_function) == -1) {
         DTRACE("%d: Error initializing thread tpool: %s\n", getpid(), strerror(errno));
         return NULL;
+    }
+
+    // initialize the linked list
+    for (int i = 0; i < MAX_NUM_CLIENTS-1; i++) {
+        slab[i].next = &slab[i+1];
     }
 
     result[0] = sockfd;
@@ -621,7 +631,7 @@ int client_init(int epfd, int connectfd) {
     client_object *client;
     
     // create client object
-    client = malloc(sizeof(client_object));
+    client = allocate_client();
     client->sockfd = connectfd;
     client->ptyfd = -1;
     client->state = STATE_NEW;
@@ -665,8 +675,21 @@ void cleanup_client(client_object *client) {
     close(client->ptyfd);
     epoll_ctl(epfd, EPOLL_CTL_DEL, client->sockfd, NULL);
     epoll_ctl(epfd, EPOLL_CTL_DEL, client->ptyfd, NULL);
-    free(client);
+    free_client(client);
 } // end cleanup_client()
+
+// analogous to malloc()
+client_object *allocate_client() {
+    client_object *result = list_head;
+    list_head = list_head->next;
+    return result;
+} // end allocate_client()
+
+// analogous to free()
+void free_client(client_object *client) {
+    client->next = list_head;
+    list_head = client;
+}
 
 
 //   _____ 
