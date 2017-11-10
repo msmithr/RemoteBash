@@ -30,7 +30,7 @@
 #define PORT 4070
 #define SECRET "cs407rembash"
 #define MAX_NUM_CLIENTS 10000
-#define TIMEOUT 1 
+#define TIMEOUT 5 
 
 // type definitions
 
