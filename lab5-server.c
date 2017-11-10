@@ -23,13 +23,14 @@
 #include <pthread.h>
 #include <time.h>
 #include <sys/syscall.h>
+#include <sys/timerfd.h>
 #include "DTRACE.h"
 #include "tpool.h"
 
 #define PORT 4070
 #define SECRET "cs407rembash"
 #define MAX_NUM_CLIENTS 10000
-#define TIMEOUT 5 
+#define TIMEOUT 1 
 
 // type definitions
 
@@ -83,6 +84,8 @@ void cleanup_client(client_object *client);
 client_object *fdmap[(MAX_NUM_CLIENTS * 2) + 6]; 
 int sockfd; // listening socket
 int epfd; // epoll fd
+int timer_epfd; // timer epoll fd
+int timer_map[(MAX_NUM_CLIENTS * 2) + 6];
 
 int main(int argc, char *argv[]) {
     DTRACE("%d: Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
@@ -97,6 +100,7 @@ int main(int argc, char *argv[]) {
     }   
     sockfd = setup_result[0];
     epfd = setup_result[1];
+    timer_epfd = setup_result[2];
 
     // epoll_wait loop
     while (1) {
@@ -118,12 +122,12 @@ int main(int argc, char *argv[]) {
 } // end main()
 
 // generic setup for the server
-// returns an array consisting of sockfd and epoll fd
+// returns an array consisting of sockfd, epoll fd, timer epoll fd
 // or NULL on failure
 int *setup() {
-    int sockfd, epfd;
+    int sockfd, epfd, timer_epfd;
     struct sigaction act;
-    static int result[2];
+    static int result[3];
 
     // set up the server socket
     if ((sockfd = setup_server_socket(PORT)) == -1) {
@@ -158,6 +162,17 @@ int *setup() {
         return NULL;
     }
 
+    // create timer epoll
+    if ((timer_epfd = epoll_create1(EPOLL_CLOEXEC)) == -1) {
+        DTRACE("%d: Error creating timer epoll: %s\n", getpid(), strerror(errno));
+        return NULL;
+    }
+
+    // add timer epoll to the epoll
+    if (epoll_add(epfd, timer_epfd, ADD_EPOLLIN) == -1) {
+        return NULL; 
+    }
+
     // add listening socket to the epoll
     if (epoll_add(epfd, sockfd, ADD_EPOLLIN) == -1) {
         return NULL;
@@ -171,6 +186,7 @@ int *setup() {
 
     result[0] = sockfd;
     result[1] = epfd;
+    result[2] = timer_epfd;
     return result;
 } // end setup()
 
@@ -179,6 +195,8 @@ int *setup() {
 void protocol_init(int connectfd) {
     const char * const rembash = "<rembash>\n";
     client_object *client = fdmap[connectfd];
+    int timerfd;
+    struct itimerspec tspec;
 
     if (write(connectfd, rembash, strlen(rembash)) == -1) {
         if (errno == EAGAIN) {
@@ -192,6 +210,30 @@ void protocol_init(int connectfd) {
     }
     client->state = STATE_SECRET;
     epoll_add(epfd, connectfd, RESET_EPOLLIN);
+
+    if ((timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC)) == -1) {
+        DTRACE("Error creating timerfd: %s\n", strerror(errno));
+        cleanup_client(client);
+    }
+
+    // store timer/sockfd association
+    timer_map[timerfd] = client->sockfd;
+    timer_map[client->sockfd] = timerfd;
+
+    // arm the timer
+    tspec.it_value.tv_sec = 1;
+    tspec.it_value.tv_nsec = 0;
+    tspec.it_interval.tv_sec = 0;
+    tspec.it_interval.tv_nsec = 0;
+    if (timerfd_settime(timerfd, 0, &tspec, NULL) == -1) {
+        DTRACE("Error setting timerfd: %s\n", strerror(errno));
+    }
+
+    // add the timer to the timer epoll
+    if (epoll_add(timer_epfd, timerfd, ADD_EPOLLIN) == -1) {
+        cleanup_client(client);
+    }
+    DTRACE("Timer added to timer epoll\n");
     return;
 } // end protocol_init()
 
@@ -200,7 +242,8 @@ void protocol_init(int connectfd) {
 void protocol_receive_secret(int connectfd) {
     const char * const secret = "<" SECRET ">\n";
     char buff[4096];
-    int nread;
+    int nread, timerfd;
+    struct itimerspec tspec;
     client_object *client = fdmap[connectfd];
 
     // read <SECRET>\n
@@ -215,6 +258,16 @@ void protocol_receive_secret(int connectfd) {
     }
     buff[nread] = '\0';
     DTRACE("%d: Read %s", getpid(), buff);
+
+    // disarm the timer
+    timerfd = timer_map[connectfd];
+    tspec.it_value.tv_sec = 0;
+    tspec.it_value.tv_nsec = 0;
+    tspec.it_interval.tv_sec = 0;
+    tspec.it_interval.tv_nsec = 0;
+    timerfd_settime(timerfd, 0, &tspec, NULL);
+    close(timerfd);
+
     
     if (strcmp(buff, secret) != 0) {
         // state = STATE_ERROR;
@@ -399,14 +452,27 @@ void sigalrm_handler(int signum) {
 } // end sigalrm_handler()
 
 void worker_function(int task) {
-    int connectfd;
+    int connectfd, readyfd;
     client_object *client;
+    struct epoll_event evlist[MAX_NUM_CLIENTS*2];
 
     // if the event is a new connection
     if (task == sockfd) {
         connectfd = accept4(task, (struct sockaddr *) NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
         client_init(epfd, connectfd);
         epoll_add(epfd, task, RESET_EPOLLIN);
+        return;
+    }
+
+    // if the event is a timer
+    if (task == timer_epfd) {
+        readyfd = epoll_wait(timer_epfd, evlist, MAX_NUM_CLIENTS, -1); 
+        for (int i = 0; i < readyfd; i++) {
+            client = fdmap[timer_map[evlist[i].data.fd]];
+            DTRACE("Timer expired: %d\n", client->sockfd);
+            cleanup_client(client);
+            close(evlist[i].data.fd);
+        }
         return;
     }
     
