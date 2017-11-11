@@ -488,6 +488,7 @@ void worker_function(int task) {
             cleanup_client(client);
             close(evlist[i].data.fd);
         }
+        epoll_add(epfd, task, RESET_EPOLLIN);
         return;
     }
     
