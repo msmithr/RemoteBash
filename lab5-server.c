@@ -210,9 +210,6 @@ void protocol_init(int connectfd) {
         return;
     }
     DTRACE("Wrote <rembash> to fd=%d\n", connectfd);
-    DTRACE("Client fd=%d state=STATE_SECRET\n", connectfd);
-    client->state = STATE_SECRET;
-    epoll_add(epfd, connectfd, RESET_EPOLLIN);
 
     if ((timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC)) == -1) {
         DTRACE("Error creating timerfd: %s\n", strerror(errno));
@@ -221,6 +218,7 @@ void protocol_init(int connectfd) {
     
     DTRACE("Created timerfd=%d\n", timerfd);
 
+    printf("HERE: %d\n", timer_epfd);
     // add the timer to the timer epoll
     if (epoll_add(timer_epfd, timerfd, ADD_EPOLLIN) == -1) {
         cleanup_client(client);
@@ -239,8 +237,11 @@ void protocol_init(int connectfd) {
     if (timerfd_settime(timerfd, 0, &tspec, NULL) == -1) {
         DTRACE("Error setting timerfd: %s\n", strerror(errno));
     }
-
     DTRACE("Armed timerfd=%d\n", timerfd);
+
+    DTRACE("Client fd=%d state=STATE_SECRET\n", connectfd);
+    client->state = STATE_SECRET;
+    epoll_add(epfd, connectfd, RESET_EPOLLIN);
 
     return;
 } // end protocol_init()
@@ -648,7 +649,7 @@ int epoll_add(int epfd, int fd, epoll_add_options mode) {
     event.data.fd = fd;
     event.events = events;
     if (epoll_ctl(epfd, op, fd, &event) == -1) {
-        DTRACE("%d: Failed to add fd=%d to epoll: %s\n", getpid(), fd, strerror(errno));
+        DTRACE("Failed to add fd=%d to epoll fd=%d: %s\n", fd, epfd, strerror(errno));
         return -1;
     }
     return 0;
@@ -700,6 +701,7 @@ int pty_init(client_object *client) {
 // kill and clean up a client connection
 void cleanup_client(client_object *client) {
     DTRACE("Cleaning up client: %d\n", client->sockfd);
+    DTRACE("Closing %d and %d\n", client->sockfd, client->ptyfd);
     close(client->sockfd);
     close(client->ptyfd);
     epoll_ctl(epfd, EPOLL_CTL_DEL, client->sockfd, NULL);
