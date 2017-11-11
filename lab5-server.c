@@ -218,7 +218,6 @@ void protocol_init(int connectfd) {
     
     DTRACE("Created timerfd=%d\n", timerfd);
 
-    printf("HERE: %d\n", timer_epfd);
     // add the timer to the timer epoll
     if (epoll_add(timer_epfd, timerfd, ADD_EPOLLIN) == -1) {
         cleanup_client(client);
@@ -491,6 +490,14 @@ void worker_function(int task) {
             }
             DTRACE("Error accepting a client: %s\n", strerror(errno));
         }
+        
+        if (connectfd >= (MAX_NUM_CLIENTS * 2 + 6)) {
+            DTRACE("Too many clients, can't accept client!\n");
+            epoll_add(epfd, task, RESET_EPOLLIN);
+            close(connectfd);
+            return;
+        }
+
         DTRACE("Client accepted: fd=%d\n", connectfd);
         client_init(epfd, connectfd);
         epoll_add(epfd, task, RESET_EPOLLIN);
