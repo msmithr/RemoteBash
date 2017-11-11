@@ -34,7 +34,6 @@ typedef enum client_state {
     STATE_NEW,
     STATE_SECRET,
     STATE_OK,
-    STATE_ERROR,
     STATE_ESTABLISHED,
     STATE_UNWRITTEN,
     STATE_TERMINATED,
@@ -248,9 +247,9 @@ void protocol_init(int connectfd) {
 // STATE_SECRET
 void protocol_receive_secret(int connectfd) {
     const char * const secret = "<" SECRET ">\n";
+    const char * const error = "<error>\n";
     char buff[4096];
     int nread, timerfd;
-    struct itimerspec tspec;
     client_object *client = fdmap[connectfd];
 
     // read <SECRET>\n
@@ -269,19 +268,17 @@ void protocol_receive_secret(int connectfd) {
 
     // disarm the timer
     timerfd = timer_map[connectfd];
-    tspec.it_value.tv_sec = 0;
-    tspec.it_value.tv_nsec = 0;
-    tspec.it_interval.tv_sec = 0;
-    tspec.it_interval.tv_nsec = 0;
-    timerfd_settime(timerfd, 0, &tspec, NULL);
     close(timerfd);
 
     DTRACE("Timer fd=%d disarmed and closed\n", timerfd);
     
     if (strcmp(buff, secret) != 0) {
-        // state = STATE_ERROR;
-        client->state = STATE_ERROR;
-        DTRACE("Client fd=%d state=STATE_ERROR\n", connectfd);
+        if (write(connectfd, error, strlen(error)) == -1) {
+            errno = 0; // reset errno in case of EAGAIN
+            DTRACE("Error writing error message to client %d\n", connectfd);
+        }
+        DTRACE("Wrote <error> to client %d\n", connectfd);
+        cleanup_client(client);
         return;
     } else {
         // state = STATE_OK;
@@ -324,28 +321,6 @@ void protocol_send_ok(int connectfd) {
     epoll_add(epfd, connectfd, RESET_EPOLLIN);
     return;
 } // end protocol_send_ok()
-
-// STATE_ERROR
-void protocol_send_error(int connectfd) {
-    const char * const error = "<error>\n";
-
-    client_object *client = fdmap[connectfd];
-
-    if (write(connectfd, error, strlen(error)) == -1) {
-        if (errno == EAGAIN) {
-            epoll_add(epfd, connectfd, RESET_EPOLLOUT);
-            errno = 0;
-            return;
-        }
-        DTRACE("Error writing to fd=%d\n", connectfd);
-        cleanup_client(client);
-        return;
-    }
-    DTRACE("Wrote <error> to fd=%d\n", connectfd);
-
-    cleanup_client(client);
-    return;
-} // end protocol_send_error()
 
 // function to create and set up a server socket
 // returns the socket file descriptor,
@@ -528,10 +503,6 @@ void worker_function(int task) {
 
         case STATE_OK:
             protocol_send_ok(task);
-            break;
-
-        case STATE_ERROR:
-            protocol_send_error(task);
             break;
 
         case STATE_ESTABLISHED:
