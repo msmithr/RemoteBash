@@ -24,7 +24,7 @@
 
 #define PORT 4070
 #define SECRET "cs407rembash"
-#define MAX_NUM_CLIENTS 10000
+#define MAX_NUM_CLIENTS 3 
 #define TIMEOUT 5 
 
 // type definitions
@@ -87,6 +87,7 @@ client_object slab[MAX_NUM_CLIENTS]; // slab allocation
 client_object *list_head = &slab[0];
 
 int main(int argc, char *argv[]) {
+    DTRACE("--INITIALIZATION--\n");
     DTRACE("Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
 
     int readyfd;
@@ -99,7 +100,7 @@ int main(int argc, char *argv[]) {
     }   
 
     DTRACE("Entering epoll_wait loop\n");
-
+    DTRACE("--END INITIALIZATION--\n");
     // epoll_wait loop
     while (1) {
         readyfd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS*2, -1);
@@ -126,8 +127,6 @@ int setup() {
     if ((sockfd = setup_server_socket(PORT)) == -1) {
         return -1;
     }
-
-    DTRACE("Listening socket fd=%d created\n", sockfd);
 
     // ignore SIGCHLD
     if (signal(SIGCHLD, SIG_IGN) == SIG_ERR) {
@@ -358,6 +357,8 @@ int setup_server_socket(int port) {
         return -1;
     }
 
+    DTRACE("Created listening socket fd=%d\n", sockfd);
+
     // immediate reuse of port for testing
     int i = 1;
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i)) == -1) {
@@ -375,11 +376,15 @@ int setup_server_socket(int port) {
         return -1;
     }
 
+    DTRACE("Bound listening socket fd=%d to port %d\n", sockfd, port);
+
     // set the socket to listen
     if ((listen(sockfd, 10)) == -1) {
         DTRACE("%d: Error setting socket to listen: %s\n", getpid(), strerror(errno));
         return -1;
     }
+
+    DTRACE("Set listening socket fd=%d to listen\n", sockfd);
 
     return sockfd;
 
@@ -436,22 +441,22 @@ int setuppty(pid_t *pid) {
         return mfd;
     }
 
-    DTRACE("%d: Slave subprocess created: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
+    DTRACE("Slave subprocess created: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
 
     // child will never return from this function
     int sfd;
 
     if (setsid() == -1) {
-        DTRACE("%d: Error setting sid: %s\n", getpid(), strerror(errno));
+        DTRACE("Error setting sid: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
     if ((sfd = open(sname, O_RDWR)) == -1) {
-        DTRACE("%d: Error opening slave pty: %s\n", getpid(), strerror(errno));
+        DTRACE("Error opening slave pty: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
-    DTRACE("%d: Redirecting stdin/out/err to sfd=%d\n", getpid(), sfd);
+    DTRACE("Redirecting stdin/out/err to sfd=%d\n", sfd);
     // redirect stdin/stdout/stderr to the pty slave
     for (int i = 0; i < 3; i++) {
         if (dup2(sfd, i) == -1) {
