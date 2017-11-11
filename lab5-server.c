@@ -24,8 +24,8 @@
 
 #define PORT 4070
 #define SECRET "cs407rembash"
-#define MAX_NUM_CLIENTS 3 
-#define TIMEOUT 5 
+#define MAX_NUM_CLIENTS 3
+#define TIMEOUT 5
 
 // type definitions
 
@@ -77,7 +77,7 @@ client_object *allocate_client();
 void free_client(client_object *client);
 
 // global variables
-client_object *fdmap[(MAX_NUM_CLIENTS * 2) + 6]; 
+client_object *fdmap[(MAX_NUM_CLIENTS * 2) + 6];
 int timer_map[(MAX_NUM_CLIENTS * 2) + 6];
 int sockfd; // listening socket
 int epfd; // epoll fd
@@ -96,7 +96,7 @@ int main(int argc, char *argv[]) {
     if (setup() == -1) {
         fprintf(stderr, "rembashd: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
-    }   
+    }
 
     DTRACE("Entering epoll_wait loop\n");
     DTRACE("--END INITIALIZATION--\n");
@@ -111,7 +111,7 @@ int main(int argc, char *argv[]) {
             } else {
                 // hand task to the thread pool
                 tpool_add_task(evlist[i].data.fd);
-            } // end if/else   
+            } // end if/else
         } // end for
     } // end while
 
@@ -120,7 +120,7 @@ int main(int argc, char *argv[]) {
 } // end main()
 
 // generic setup for the server
-// returns 0, or -1 on failure 
+// returns 0, or -1 on failure
 int setup() {
     // set up the server socket
     if ((sockfd = setup_server_socket(PORT)) == -1) {
@@ -161,7 +161,7 @@ int setup() {
 
     // add timer epoll to the epoll
     if (epoll_add(epfd, timer_epfd, ADD_EPOLLIN) == -1) {
-        return -1; 
+        return -1;
     }
 
     DTRACE("Timer epoll fd=%d added to epoll fd=%d\n", timer_epfd, epfd);
@@ -214,7 +214,7 @@ void protocol_init(int connectfd) {
         DTRACE("Error creating timerfd: %s\n", strerror(errno));
         cleanup_client(client);
     }
-    
+
     DTRACE("Created timerfd=%d\n", timerfd);
 
     // add the timer to the timer epoll
@@ -258,7 +258,7 @@ void protocol_receive_secret(int connectfd) {
             errno = 0;
             epoll_add(epfd, connectfd, RESET_EPOLLIN);
             return;
-        } 
+        }
         DTRACE("Error reading from fd=%d: %s\n", connectfd, strerror(errno));
         cleanup_client(client);
         return;
@@ -271,7 +271,7 @@ void protocol_receive_secret(int connectfd) {
     close(timerfd);
 
     DTRACE("Timer fd=%d disarmed and closed\n", timerfd);
-    
+
     if (strcmp(buff, secret) != 0) {
         if (write(connectfd, error, strlen(error)) == -1) {
             errno = 0; // reset errno in case of EAGAIN
@@ -300,7 +300,7 @@ void protocol_send_ok(int connectfd) {
             epoll_add(epfd, connectfd, RESET_EPOLLOUT);
             errno = 0;
             return;
-        } 
+        }
         cleanup_client(client);
         return;
     }
@@ -446,8 +446,8 @@ int setuppty(pid_t *pid) {
     // exec into bash
     execlp("bash", "bash", NULL);
 
-    // should only reach here if execlp failed 
-    exit(EXIT_FAILURE); 
+    // should only reach here if execlp failed
+    exit(EXIT_FAILURE);
 } // end setuppty()
 
 void worker_function(int task) {
@@ -465,7 +465,7 @@ void worker_function(int task) {
             }
             DTRACE("Error accepting a client: %s\n", strerror(errno));
         }
-        
+
         if (connectfd >= (MAX_NUM_CLIENTS * 2 + 6)) {
             DTRACE("Too many clients, can't accept client!\n");
             epoll_add(epfd, task, RESET_EPOLLIN);
@@ -481,7 +481,7 @@ void worker_function(int task) {
 
     // if the event is a timer
     if (task == timer_epfd) {
-        readyfd = epoll_wait(timer_epfd, evlist, MAX_NUM_CLIENTS, -1); 
+        readyfd = epoll_wait(timer_epfd, evlist, MAX_NUM_CLIENTS, -1);
         for (int i = 0; i < readyfd; i++) {
             client = fdmap[timer_map[evlist[i].data.fd]];
             DTRACE("Timer expired: %d\n", client->sockfd);
@@ -491,11 +491,11 @@ void worker_function(int task) {
         epoll_add(epfd, task, RESET_EPOLLIN);
         return;
     }
-    
+
     client = fdmap[task];
     switch (client->state) {
         case STATE_NEW:
-            protocol_init(task); 
+            protocol_init(task);
             break;
 
         case STATE_SECRET:
@@ -552,7 +552,7 @@ void worker_established(int task) {
             DTRACE("Failed to write to %d\n", tofd);
             cleanup_client(client);
             return;
-        }    
+        }
     }
 
     // partial write
@@ -567,11 +567,11 @@ void worker_established(int task) {
             client->data[j++] = buff[i];
         }
         client->data[j] = '\0';
-    
+
         // add sockfd to epoll listening for EPOLLOUT
         epoll_add(epfd, client->sockfd, RESET_EPOLLOUT);
     }
-    epoll_add(epfd, task, RESET_EPOLLIN); 
+    epoll_add(epfd, task, RESET_EPOLLIN);
     return;
 
 } // end worker_established
@@ -624,7 +624,7 @@ int epoll_add(int epfd, int fd, epoll_add_options mode) {
             break;
     }
 
-    struct epoll_event event;   
+    struct epoll_event event;
     event.data.fd = fd;
     event.events = events;
     if (epoll_ctl(epfd, op, fd, &event) == -1) {
@@ -638,7 +638,7 @@ int epoll_add(int epfd, int fd, epoll_add_options mode) {
 // creates a client object and adds the sockfd to the epoll
 int client_init(int epfd, int connectfd) {
     client_object *client;
-    
+
     // create client object
     client = allocate_client();
     client->sockfd = connectfd;
@@ -649,7 +649,7 @@ int client_init(int epfd, int connectfd) {
     DTRACE("Client object created: sockfd=%d, ptyfd=%d\n", client->sockfd, client->ptyfd);
     // set up mapping
     fdmap[connectfd] = client;
-    
+
     // add connection to epoll listening for EPOLLOUT
     if (epoll_add(epfd, connectfd, ADD_EPOLLOUT) == -1) {
         return -1;
@@ -702,9 +702,9 @@ void free_client(client_object *client) {
 } // end free_client()
 
 
-//   _____ 
+//   _____
 //  < EOF >
-//   ----- 
+//   -----
 //    \                                  ,+*^^*+___+++_
 //     \                           ,*^^^^              )
 //      \                       _+*                     ^**+_
