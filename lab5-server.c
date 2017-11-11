@@ -221,6 +221,12 @@ void protocol_init(int connectfd) {
     
     DTRACE("Created timerfd=%d\n", timerfd);
 
+    // add the timer to the timer epoll
+    if (epoll_add(timer_epfd, timerfd, ADD_EPOLLIN) == -1) {
+        cleanup_client(client);
+    }
+    DTRACE("Timerfd=%d added to timer epoll fd=%d\n", timerfd, timer_epfd);
+
     // store timer/sockfd association
     timer_map[timerfd] = client->sockfd;
     timer_map[client->sockfd] = timerfd;
@@ -236,11 +242,6 @@ void protocol_init(int connectfd) {
 
     DTRACE("Armed timerfd=%d\n", timerfd);
 
-    // add the timer to the timer epoll
-    if (epoll_add(timer_epfd, timerfd, ADD_EPOLLIN) == -1) {
-        cleanup_client(client);
-    }
-    DTRACE("Timerfd=%d added to timer epoll fd=%d\n", timerfd, timer_epfd);
     return;
 } // end protocol_init()
 
@@ -315,6 +316,7 @@ void protocol_send_ok(int connectfd) {
     DTRACE("Setting up PTY for client fd=%d\n", connectfd);
 
     if (pty_init(client) == -1) {
+        printf("I am here\n");
         cleanup_client(client);
         return;
     }
