@@ -1,5 +1,5 @@
 // CS407 Lab 05
-// 
+//
 // Client/server application allowing user to run bash
 // commands on a remote machine, similar to SSH or Telnet
 //
@@ -46,7 +46,7 @@ int main(int argc, char *argv[]) {
     int sockfd;
     pid_t pid;
     struct sigaction act;
-   
+
     DTRACE("%d: Client starting: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getpid(), getppid(), getpgrp(), getsid(0));
 
     switch (sockfd = setup(ip, PORT)) {
@@ -79,7 +79,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_SUCCESS);
     } // end switch/case
 
-    write_loop(sockfd, 1); 
+    write_loop(sockfd, 1);
 
     // ignore SIGCHLD
     signal(SIGCHLD, SIG_IGN);
@@ -87,7 +87,7 @@ int main(int argc, char *argv[]) {
     kill(pid, SIGTERM); // SIGTERM to subprocess
 
     if (tcsetattr(0, TCSAFLUSH, &saved_termset) == -1) {
-        fprintf(stderr, "rembash: %s\n", strerror(errno)); 
+        fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
@@ -108,7 +108,7 @@ int setup(char *ip, int port) {
     // ignore sigpipe
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
         return -1;
-    }   
+    }
 
     // register signal handler for SIGCHLD
     act.sa_handler = sigint_handler;
@@ -119,7 +119,7 @@ int setup(char *ip, int port) {
     // connect to server
     if ((sockfd = connect_server(ip, PORT)) == -1) {
         return -1;
-    }    
+    }
     if (sockfd == -2) {
         return -3;
     }
@@ -207,7 +207,7 @@ void write_loop(int fromfd, int tofd) {
         if (write(tofd, buff, nread) == -1) {
             break;
         }
-    }   
+    }
     DTRACE("%d: Write loop from %d to %d terminated\n", getpid(), fromfd, tofd);
     return;
 }
@@ -223,7 +223,7 @@ int connect_server(char *ip, int port) {
     if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
         return -1;
     }
-    
+
     // set up sockaddr_in struct
     struct sockaddr_in servaddr;
     servaddr.sin_family = AF_INET;
@@ -231,10 +231,10 @@ int connect_server(char *ip, int port) {
     if (inet_aton(ip, &servaddr.sin_addr) == 0) {
         return -2;
     }
-    
+
     // connect
     if (connect(sockfd, (struct sockaddr *) &servaddr, sizeof(servaddr)) == -1) {
-        return -1;    
+        return -1;
     }
 
     return sockfd;
@@ -245,7 +245,7 @@ int connect_server(char *ip, int port) {
 void sigint_handler(int signum) {
     DTRACE("SIGINT handler fired\n");
     if (tcsetattr(0, TCSAFLUSH, &saved_termset) == -1) {
-        fprintf(stderr, "rembash: %s\n", strerror(errno)); 
+        fprintf(stderr, "rembash: %s\n", strerror(errno));
     }
     _exit(EXIT_FAILURE);
 }
@@ -269,20 +269,20 @@ void sigchld_handler(int signum) {
     }
 
     // terminate
-    DTRACE("%d: Terminating process\n", getpid()); 
+    DTRACE("%d: Terminating process\n", getpid());
     _exit(EXIT_SUCCESS);
 }
 
 
-//   _____ 
+//   _____
 //  < EOF >
-//   ----- 
+//   -----
 //    \                                  ,+*^^*+___+++_
 //     \                           ,*^^^^              )
 //      \                       _+*                     ^**+_
 //       \                    +^       _ _++*+_+++_,         )
 //                _+^^*+_    (     ,+*^ ^          \+_        )
-//               {       )  (    ,(    ,_+--+--,      ^)      ^\. 
+//               {       )  (    ,(    ,_+--+--,      ^)      ^\.
 //              { (@)    } f   ,(  ,+-^ __*_*_  ^^\_   ^\       )
 //             {:;-/    (_+*-+^^^^^+*+*<_ _++_)_    )    )      /
 //            ( /  (    (        ,___    ^*+_+* )   <    <      \.
