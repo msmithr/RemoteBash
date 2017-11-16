@@ -313,7 +313,6 @@ void protocol_send_ok(int connectfd) {
     DTRACE("Setting up PTY for client fd=%d\n", connectfd);
 
     if (pty_init(client) == -1) {
-        printf("I am here\n");
         cleanup_client(client);
         return;
     }
