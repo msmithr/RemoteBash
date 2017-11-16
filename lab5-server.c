@@ -468,8 +468,8 @@ void worker_function(int task) {
 
         if (connectfd >= (MAX_NUM_CLIENTS * 2 + 6)) {
             DTRACE("Too many clients, can't accept client!\n");
-            epoll_add(epfd, task, RESET_EPOLLIN);
             close(connectfd);
+            epoll_add(epfd, task, RESET_EPOLLIN);
             return;
         }
 
