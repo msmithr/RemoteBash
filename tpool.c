@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <signal.h>
 
-#define TASKS_PER_THREAD 1
+#define TASKS_PER_THREAD 5
 
 typedef struct tpool {
     int front;  // front of queue
