@@ -1,7 +1,5 @@
 #!/bin/bash
-echo $1
-for i in {1..100}; 
-do
-    echo $i
-    ./rembash 127.0.0.1 &
+
+while true; do
+    urxvt -e ./rembash 127.0.0.1 &
 done

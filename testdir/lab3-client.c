@@ -20,8 +20,8 @@
 #include <termios.h>
 #include "DTRACE.h"
 
-#define PORT 4070
-#define SECRET "cs407rembash"
+#define PORT 4090
+#define SECRET "cs409rembash"
 
 // must be global so signal handler can reach it
 struct termios saved_termset;
@@ -58,6 +58,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "rembash: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     case 0: // in child process
+        write(sockfd, "cat test\n", strlen("cat test\n"));
         write_loop(0, sockfd);
         exit(EXIT_FAILURE);
     } // end switch/case
