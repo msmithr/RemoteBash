@@ -680,6 +680,7 @@ int pty_init(client_object *client) {
 void cleanup_client(client_object *client) {
     DTRACE("Cleaning up client: %d\n", client->sockfd);
     DTRACE("Closing %d and %d\n", client->sockfd, client->ptyfd);
+    client->state = STATE_TERMINATED;
     close(client->sockfd);
     close(client->ptyfd);
     epoll_ctl(epfd, EPOLL_CTL_DEL, client->sockfd, NULL);
