@@ -60,6 +60,7 @@ typedef struct client_object {
 // function prototypes
 int setup();
 int setup_server_socket(int port);
+int setup_timer(int sockfd);
 void protocol_init(int connectfd);
 void protocol_receive_secret(int connectfd);
 void protocol_send_ok(int connectfd);
@@ -195,12 +196,47 @@ int setup() {
     return 0;
 } // end setup()
 
+// create a timerfd, add it to the timer epoll, and arm it
+// needs sockfd of associated client 
+int setup_timer(int sockfd) {
+    struct itimerspec tspec;
+    int timerfd;
+
+    if ((timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC)) == -1) {
+        DTRACE("Error creating timerfd: %s\n", strerror(errno));
+        return -1;
+    }
+
+    DTRACE("Created timerfd=%d\n", timerfd);
+
+    // add the timer to the timer epoll
+    if (epoll_add(timer_epfd, timerfd, ADD_EPOLLIN) == -1) {
+        return -1;
+    }
+    DTRACE("Timerfd=%d added to timer epoll fd=%d\n", timerfd, timer_epfd);
+
+    // store timer/sockfd association
+    timer_map[timerfd] = sockfd;
+    timer_map[sockfd] = timerfd;
+
+    // arm the timer
+    tspec.it_value.tv_sec = 1;
+    tspec.it_value.tv_nsec = 0;
+    tspec.it_interval.tv_sec = 0;
+    tspec.it_interval.tv_nsec = 0;
+    if (timerfd_settime(timerfd, 0, &tspec, NULL) == -1) {
+        DTRACE("Error setting timerfd: %s\n", strerror(errno));
+        return -1;
+    }
+    DTRACE("Armed timerfd=%d\n", timerfd);
+    
+    return 0;
+} // end setup_timer()
+
 // STATE_NEW
 void protocol_init(int connectfd) {
     const char * const rembash = "<rembash>\n";
     client_object *client = fdmap[connectfd];
-    int timerfd;
-    struct itimerspec tspec;
 
     if (write(connectfd, rembash, strlen(rembash)) == -1) {
         if (errno == EAGAIN) {
@@ -214,32 +250,10 @@ void protocol_init(int connectfd) {
     }
     DTRACE("Wrote <rembash> to fd=%d\n", connectfd);
 
-    if ((timerfd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC)) == -1) {
-        DTRACE("Error creating timerfd: %s\n", strerror(errno));
+    if (setup_timer(client->sockfd) == -1) {
         cleanup_client(client);
+        return;
     }
-
-    DTRACE("Created timerfd=%d\n", timerfd);
-
-    // add the timer to the timer epoll
-    if (epoll_add(timer_epfd, timerfd, ADD_EPOLLIN) == -1) {
-        cleanup_client(client);
-    }
-    DTRACE("Timerfd=%d added to timer epoll fd=%d\n", timerfd, timer_epfd);
-
-    // store timer/sockfd association
-    timer_map[timerfd] = client->sockfd;
-    timer_map[client->sockfd] = timerfd;
-
-    // arm the timer
-    tspec.it_value.tv_sec = 1;
-    tspec.it_value.tv_nsec = 0;
-    tspec.it_interval.tv_sec = 0;
-    tspec.it_interval.tv_nsec = 0;
-    if (timerfd_settime(timerfd, 0, &tspec, NULL) == -1) {
-        DTRACE("Error setting timerfd: %s\n", strerror(errno));
-    }
-    DTRACE("Armed timerfd=%d\n", timerfd);
 
     DTRACE("Client fd=%d state=STATE_SECRET\n", connectfd);
     client->state = STATE_SECRET;
