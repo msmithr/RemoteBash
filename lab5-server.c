@@ -266,8 +266,13 @@ void protocol_init(int connectfd) {
     DTRACE("Client fd=%d state=STATE_SECRET\n", connectfd);
     client->state = STATE_SECRET;
 
-    if (epoll_add(epfd, connectfd, RESET_EPOLLIN) == -1)
+    if (epoll_add(epfd, connectfd, RESET_EPOLLIN) == -1) {
         cleanup_client(client);
+        // disarm the timer
+        int timerfd = timer_map[connectfd];
+        close(timerfd);
+        DTRACE("Timer fd=%d disarmed and closed\n", timerfd);
+    }
 
     return;
 } // end protocol_init()
@@ -284,12 +289,21 @@ void protocol_receive_secret(int connectfd) {
     if ((nread = read(connectfd, buff, 4096)) == -1) {
         if (errno == EAGAIN) {
             errno = 0;
-            if (epoll_add(epfd, connectfd, RESET_EPOLLIN) == -1)
+            if (epoll_add(epfd, connectfd, RESET_EPOLLIN) == -1) {
                 cleanup_client(client);
+                // disarm the timer
+                timerfd = timer_map[connectfd];
+                close(timerfd);
+                DTRACE("Timer fd=%d disarmed and closed\n", timerfd);
+            }
             return;
         }
         DTRACE("Error reading from fd=%d: %s\n", connectfd, strerror(errno));
         cleanup_client(client);
+        // disarm the timer
+        timerfd = timer_map[connectfd];
+        close(timerfd);
+        DTRACE("Timer fd=%d disarmed and closed\n", timerfd);
         return;
     }
     buff[nread] = '\0';
@@ -569,8 +583,8 @@ void worker_timer(int task) {
     for (int i = 0; i < readyfd; i++) {
         client = fdmap[timer_map[evlist[i].data.fd]];
         DTRACE("Timer expired: %d\n", client->sockfd);
-        cleanup_client(client);
         close(evlist[i].data.fd);
+        cleanup_client(client);
     }
     epoll_add(epfd, task, RESET_EPOLLIN);
     return;
