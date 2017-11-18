@@ -348,7 +348,8 @@ void protocol_send_ok(int connectfd) {
 
     client->state = STATE_ESTABLISHED;
 
-    epoll_add(epfd, connectfd, RESET_EPOLLIN);
+    if (epoll_add(epfd, connectfd, RESET_EPOLLIN) == -1)
+        cleanup_client(client);
     return;
 } // end protocol_send_ok()
 
@@ -584,7 +585,8 @@ void worker_established(int task) {
     tofd = (fromfd == client->sockfd) ? client->ptyfd : client->sockfd;
     if ((nread = read(fromfd, buff, 4096)) == -1) {
         if (errno == EAGAIN) {
-            epoll_add(epfd, task, RESET_EPOLLIN);
+            if (epoll_add(epfd, task, RESET_EPOLLIN) == -1)
+                cleanup_client(client);
             errno = 0; // reset errno
             return;
         } else {
@@ -605,7 +607,8 @@ void worker_established(int task) {
                 client->data[i] = buff[i];
             }
             client->data[strlen(buff)] = '\0';
-            epoll_add(epfd, client->sockfd, RESET_EPOLLOUT);
+            if (epoll_add(epfd, client->sockfd, RESET_EPOLLOUT) == -1)
+                cleanup_client(client);
             return;
         } else {
             DTRACE("Failed to write to %d\n", tofd);
@@ -627,10 +630,12 @@ void worker_established(int task) {
         client->data[j] = '\0';
 
         // add sockfd to epoll listening for EPOLLOUT
-        epoll_add(epfd, client->sockfd, RESET_EPOLLOUT);
+        if (epoll_add(epfd, client->sockfd, RESET_EPOLLOUT) == -1)
+            cleanup_client(client);
         return;
     }
-    epoll_add(epfd, task, RESET_EPOLLIN);
+    if (epoll_add(epfd, task, RESET_EPOLLIN) == -1)
+        cleanup_client(client);
     return;
 
 } // end worker_established
@@ -651,11 +656,14 @@ void worker_unwritten(int task) {
 
     if (nwrote < strlen(to_write)) {
         client->index += nwrote;
-        epoll_add(epfd, client->sockfd, RESET_EPOLLOUT);
+        if (epoll_add(epfd, client->sockfd, RESET_EPOLLOUT) == -1)
+            cleanup_client(client);
     } else {
         client->state = STATE_ESTABLISHED;
-        epoll_add(epfd, client->sockfd, RESET_EPOLLIN);
-        epoll_add(epfd, client->ptyfd, RESET_EPOLLIN);
+        if (epoll_add(epfd, client->sockfd, RESET_EPOLLIN) == -1)
+            cleanup_client(client);
+        if (epoll_add(epfd, client->ptyfd, RESET_EPOLLIN) == -1)
+            cleanup_client(client);
     }
 
 } // end worker_unwritten()
