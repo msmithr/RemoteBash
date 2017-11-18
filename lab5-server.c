@@ -24,7 +24,7 @@
 
 #define PORT 4070
 #define SECRET "cs407rembash"
-#define MAX_NUM_CLIENTS 3
+#define MAX_NUM_CLIENTS 100
 #define TIMEOUT 5
 
 // type definitions
@@ -307,8 +307,6 @@ void protocol_send_ok(int connectfd) {
 
     DTRACE("Wrote <ok> to fd=%d\n", connectfd);
 
-    client->state = STATE_ESTABLISHED;
-
     DTRACE("Client fd=%d state=STATE_ESTABLISHED\n", connectfd);
     DTRACE("Setting up PTY for client fd=%d\n", connectfd);
 
@@ -316,6 +314,8 @@ void protocol_send_ok(int connectfd) {
         cleanup_client(client);
         return;
     }
+
+    client->state = STATE_ESTABLISHED;
 
     epoll_add(epfd, connectfd, RESET_EPOLLIN);
     return;
