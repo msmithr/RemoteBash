@@ -621,6 +621,7 @@ void worker_established(int task) {
 
         // add sockfd to epoll listening for EPOLLOUT
         epoll_add(epfd, client->sockfd, RESET_EPOLLOUT);
+        return;
     }
     epoll_add(epfd, task, RESET_EPOLLIN);
     return;
