@@ -199,7 +199,7 @@ int setup() {
 } // end setup()
 
 // create a timerfd, add it to the timer epoll, and arm it
-// needs sockfd of associated client 
+// needs sockfd of associated client
 int setup_timer(int sockfd) {
     struct itimerspec tspec;
     int timerfd;
@@ -233,7 +233,7 @@ int setup_timer(int sockfd) {
         return -1;
     }
     DTRACE("Armed timerfd=%d\n", timerfd);
-    
+
     return 0;
 } // end setup_timer()
 
@@ -348,7 +348,8 @@ void protocol_send_ok(int connectfd) {
 
     client->state = STATE_ESTABLISHED;
 
-    epoll_add(epfd, connectfd, RESET_EPOLLIN);
+    if (epoll_add(epfd, connectfd, RESET_EPOLLIN) == -1)
+        cleanup_client(client);
     return;
 } // end protocol_send_ok()
 
@@ -547,7 +548,7 @@ void worker_newconnection(int task) {
         if (client_init(epfd, connectfd) == -1) {
             close(connectfd);
             epoll_add(epfd, task, RESET_EPOLLIN);
-            return; 
+            return;
         }
 
         epoll_add(epfd, task, RESET_EPOLLIN);
@@ -584,7 +585,8 @@ void worker_established(int task) {
     tofd = (fromfd == client->sockfd) ? client->ptyfd : client->sockfd;
     if ((nread = read(fromfd, buff, 4096)) == -1) {
         if (errno == EAGAIN) {
-            epoll_add(epfd, task, RESET_EPOLLIN);
+            if (epoll_add(epfd, task, RESET_EPOLLIN) == -1)
+                cleanup_client(client);
             errno = 0; // reset errno
         } else {
             DTRACE("Failed to read from %d\n", fromfd);
@@ -597,7 +599,8 @@ void worker_established(int task) {
     if ((nwrote = write(tofd, buff, nread)) == -1) {
         if (errno == EAGAIN) {
             errno = 0; // reset errno
-            epoll_add(epfd, task, RESET_EPOLLIN);
+            if (epoll_add(epfd, task, RESET_EPOLLIN == -1))
+                cleanup_client(client);
             return;
         } else {
             DTRACE("Failed to write to %d\n", tofd);
@@ -619,13 +622,16 @@ void worker_established(int task) {
         client->data[j] = '\0';
 
         // add sockfd to epoll listening for EPOLLOUT
-        epoll_add(epfd, client->sockfd, RESET_EPOLLOUT);
+        if (epoll_add(epfd, client->sockfd, RESET_EPOLLOUT) == -1)
+            cleanup_client(client);
     }
-    epoll_add(epfd, task, RESET_EPOLLIN);
+    if (epoll_add(epfd, task, RESET_EPOLLIN) == -1)
+        cleanup_client(client);
     return;
 
 } // end worker_established
 
+// partial write handling
 void worker_unwritten(int task) {
     int nwrote;
     client_object *client = fdmap[task];
@@ -641,12 +647,16 @@ void worker_unwritten(int task) {
     }
 
     if (nwrote < strlen(to_write)) {
+        // if we still haven't written the full buffer
         client->index += nwrote;
-        epoll_add(epfd, client->sockfd, RESET_EPOLLOUT);
+        if (epoll_add(epfd, client->sockfd, RESET_EPOLLOUT) == -1)
+            cleanup_client(client);
     } else {
         client->state = STATE_ESTABLISHED;
-        epoll_add(epfd, client->sockfd, RESET_EPOLLIN);
-        epoll_add(epfd, client->ptyfd, RESET_EPOLLIN);
+        if (epoll_add(epfd, client->sockfd, RESET_EPOLLIN) == -1)
+            cleanup_client(client);
+        if (epoll_add(epfd, client->ptyfd, RESET_EPOLLIN) == -1)
+            cleanup_client(client);
     }
 
 } // end worker_unwritten()
