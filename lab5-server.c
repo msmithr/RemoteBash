@@ -85,10 +85,11 @@ int timer_epfd; // timer epoll fd
 client_object slab[MAX_NUM_CLIENTS]; // slab allocation
 client_object *list_head = &slab[0];
 
+pthread_mutex_t mutex =  PTHREAD_MUTEX_INITIALIZER;
+
 int main(int argc, char *argv[]) {
     DTRACE("--INITIALIZATION--\n");
     DTRACE("Server staring: PID=%d, PPID=%d, PGID=%d, SID=%d\n", getpid(), getppid(), getpgrp(), getsid(0));
-
     int readyfd;
     struct epoll_event evlist[MAX_NUM_CLIENTS*2];
 
@@ -680,14 +681,18 @@ int pty_init(client_object *client) {
 
 // kill and clean up a client connection
 void cleanup_client(client_object *client) {
-    DTRACE("Cleaning up client: %d\n", client->sockfd);
-    DTRACE("Closing %d and %d\n", client->sockfd, client->ptyfd);
-    client->state = STATE_TERMINATED;
-    close(client->sockfd);
-    close(client->ptyfd);
-    epoll_ctl(epfd, EPOLL_CTL_DEL, client->sockfd, NULL);
-    epoll_ctl(epfd, EPOLL_CTL_DEL, client->ptyfd, NULL);
-    free_client(client);
+    pthread_mutex_lock(&mutex);
+    if (client->state != STATE_TERMINATED) {
+        DTRACE("Cleaning up client: %d\n", client->sockfd);
+        DTRACE("Closing %d and %d\n", client->sockfd, client->ptyfd);
+        client->state = STATE_TERMINATED;
+        close(client->sockfd);
+        close(client->ptyfd);
+        epoll_ctl(epfd, EPOLL_CTL_DEL, client->sockfd, NULL);
+        epoll_ctl(epfd, EPOLL_CTL_DEL, client->ptyfd, NULL);
+        free_client(client);
+    }
+    pthread_mutex_unlock(&mutex);
 } // end cleanup_client()
 
 // analogous to malloc()
