@@ -586,6 +586,7 @@ void worker_established(int task) {
         if (errno == EAGAIN) {
             epoll_add(epfd, task, RESET_EPOLLIN);
             errno = 0; // reset errno
+            return;
         } else {
             DTRACE("Failed to read from %d\n", fromfd);
             cleanup_client(client);
