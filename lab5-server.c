@@ -68,8 +68,6 @@ void protocol_send_error(int connectfd);
 int pty_init(client_object *client);
 int setuppty(pid_t *pid);
 void worker_function(int task);
-void worker_newconnection(int task);
-void worker_timer(int task);
 void worker_established(int task);
 void worker_unwritten(int task);
 void worker_new(int task);
@@ -213,7 +211,6 @@ int setup_timer(int sockfd) {
 
     // add the timer to the timer epoll
     if (epoll_add(timer_epfd, timerfd, ADD_EPOLLIN) == -1) {
-        close(timerfd);
         return -1;
     }
     DTRACE("Timerfd=%d added to timer epoll fd=%d\n", timerfd, timer_epfd);
@@ -229,7 +226,6 @@ int setup_timer(int sockfd) {
     tspec.it_interval.tv_nsec = 0;
     if (timerfd_settime(timerfd, 0, &tspec, NULL) == -1) {
         DTRACE("Error setting timerfd: %s\n", strerror(errno));
-        close(timerfd);
         return -1;
     }
     DTRACE("Armed timerfd=%d\n", timerfd);
@@ -242,12 +238,10 @@ void protocol_init(int connectfd) {
     const char * const rembash = "<rembash>\n";
     client_object *client = fdmap[connectfd];
 
-    // write <rembash>
     if (write(connectfd, rembash, strlen(rembash)) == -1) {
         if (errno == EAGAIN) {
             errno = 0;
-            if (epoll_add(epfd, connectfd, RESET_EPOLLOUT) == -1)
-                cleanup_client(client);
+            epoll_add(epfd, connectfd, RESET_EPOLLOUT);
             return;
         }
         DTRACE("%d: Error writing <rembash>: %s\n", getpid(), strerror(errno));
@@ -256,18 +250,14 @@ void protocol_init(int connectfd) {
     }
     DTRACE("Wrote <rembash> to fd=%d\n", connectfd);
 
-    // set up the associated timer
     if (setup_timer(client->sockfd) == -1) {
         cleanup_client(client);
         return;
     }
 
-    // set client to STATE_SECRET
     DTRACE("Client fd=%d state=STATE_SECRET\n", connectfd);
     client->state = STATE_SECRET;
-
-    if (epoll_add(epfd, connectfd, RESET_EPOLLIN) == -1)
-        cleanup_client(client);
+    epoll_add(epfd, connectfd, RESET_EPOLLIN);
 
     return;
 } // end protocol_init()
@@ -284,8 +274,7 @@ void protocol_receive_secret(int connectfd) {
     if ((nread = read(connectfd, buff, 4096)) == -1) {
         if (errno == EAGAIN) {
             errno = 0;
-            if (epoll_add(epfd, connectfd, RESET_EPOLLIN) == -1)
-                cleanup_client(client);
+            epoll_add(epfd, connectfd, RESET_EPOLLIN);
             return;
         }
         DTRACE("Error reading from fd=%d: %s\n", connectfd, strerror(errno));
@@ -298,6 +287,9 @@ void protocol_receive_secret(int connectfd) {
     // disarm the timer
     timerfd = timer_map[connectfd];
     close(timerfd);
+    timer_map[connectfd] = -1;
+    timer_map[timerfd] = -1;
+
     DTRACE("Timer fd=%d disarmed and closed\n", timerfd);
 
     if (strcmp(buff, secret) != 0) {
@@ -314,9 +306,7 @@ void protocol_receive_secret(int connectfd) {
         DTRACE("Client fd=%d state=STATE_OK\n", connectfd);
     }
 
-    if (epoll_add(epfd, connectfd, RESET_EPOLLOUT) == -1) {
-        cleanup_client(client);
-    }
+    epoll_add(epfd, connectfd, RESET_EPOLLOUT);
     return;
 } // end protocol_receive_secret()
 
@@ -327,8 +317,7 @@ void protocol_send_ok(int connectfd) {
     client_object *client = fdmap[connectfd];
     if (write(connectfd, ok, strlen(ok)) == -1) {
         if (errno == EAGAIN) {
-            if (epoll_add(epfd, connectfd, RESET_EPOLLOUT) == -1)
-                cleanup_client(client);
+            epoll_add(epfd, connectfd, RESET_EPOLLOUT);
             errno = 0;
             return;
         }
@@ -482,17 +471,45 @@ int setuppty(pid_t *pid) {
 } // end setuppty()
 
 void worker_function(int task) {
+    int connectfd, readyfd;
     client_object *client;
+    struct epoll_event evlist[MAX_NUM_CLIENTS*2];
 
     // if the event is a new connection
     if (task == sockfd) {
-        worker_newconnection(task);
+        if ((connectfd = accept4(task, (struct sockaddr *) NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK)) == -1) {
+            if (errno == EAGAIN) {
+                errno = 0;
+                epoll_add(epfd, task, RESET_EPOLLIN);
+                return;
+            }
+            DTRACE("Error accepting a client: %s\n", strerror(errno));
+        }
+
+        DTRACE("Client accepted: fd=%d\n", connectfd);
+        if (client_init(epfd, connectfd) == -1) {
+            close(connectfd);
+            epoll_add(epfd, task, RESET_EPOLLIN);
+            return; 
+        }
+
+        epoll_add(epfd, task, RESET_EPOLLIN);
         return;
     }
 
     // if the event is a timer
     if (task == timer_epfd) {
-        worker_timer(task);
+        if ((readyfd = epoll_wait(timer_epfd, evlist, MAX_NUM_CLIENTS, -1)) == -1) {
+            DTRACE("Error on epoll_wait: %s\n", strerror(errno));
+            return;
+        }
+        for (int i = 0; i < readyfd; i++) {
+            client = fdmap[timer_map[evlist[i].data.fd]];
+            DTRACE("Timer expired: %d\n", client->sockfd);
+            cleanup_client(client);
+            close(evlist[i].data.fd);
+        }
+        epoll_add(epfd, task, RESET_EPOLLIN);
         return;
     }
 
@@ -530,6 +547,7 @@ void worker_function(int task) {
 
 } // end worker_function()
 
+<<<<<<< HEAD
 // new connection
 void worker_newconnection(int task) {
     int connectfd;
@@ -576,6 +594,8 @@ void worker_timer(int task) {
     return;
 } // end worker_timer()
 
+=======
+>>>>>>> parent of c911104... refactoring
 void worker_established(int task) {
     int fromfd, tofd, nread, nwrote;
     char buff[4096];
