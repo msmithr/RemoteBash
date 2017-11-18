@@ -23,7 +23,7 @@
 
 #define PORT 4070
 #define SECRET "cs407rembash"
-#define MAX_NUM_CLIENTS 4 
+#define MAX_NUM_CLIENTS 2 
 #define TIMEOUT 5
 
 // type definitions
@@ -467,15 +467,13 @@ void worker_function(int task) {
             DTRACE("Error accepting a client: %s\n", strerror(errno));
         }
 
-        if (connectfd >= (MAX_NUM_CLIENTS * 2 + 6)) {
-            DTRACE("Too many clients, can't accept client!\n");
+        DTRACE("Client accepted: fd=%d\n", connectfd);
+        if (client_init(epfd, connectfd) == -1) {
             close(connectfd);
             epoll_add(epfd, task, RESET_EPOLLIN);
-            return;
+            return; 
         }
 
-        DTRACE("Client accepted: fd=%d\n", connectfd);
-        client_init(epfd, connectfd);
         epoll_add(epfd, task, RESET_EPOLLIN);
         return;
     }
@@ -641,7 +639,10 @@ int client_init(int epfd, int connectfd) {
     client_object *client;
 
     // create client object
-    client = allocate_client();
+    if ((client = allocate_client()) == NULL) {
+        DTRACE("Too many clients\n");
+        return -1;
+    }
     client->sockfd = connectfd;
     client->ptyfd = -1;
     client->state = STATE_NEW;
@@ -693,6 +694,9 @@ void cleanup_client(client_object *client) {
 // analogous to malloc()
 client_object *allocate_client() {
     client_object *result = list_head;
+    if (result == NULL) {
+        return NULL;
+    }
     list_head = list_head->next;
     result->free = 0;
     return result;
