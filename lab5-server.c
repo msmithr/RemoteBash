@@ -269,6 +269,8 @@ void protocol_receive_secret(int connectfd) {
     // disarm the timer
     timerfd = timer_map[connectfd];
     close(timerfd);
+    timer_map[connectfd] = -1;
+    timer_map[timerfd] = -1;
 
     DTRACE("Timer fd=%d disarmed and closed\n", timerfd);
 
@@ -492,6 +494,7 @@ void worker_function(int task) {
     }
 
     client = fdmap[task];
+    if (client == NULL) return;
     switch (client->state) {
         case STATE_NEW:
             protocol_init(task);
@@ -556,7 +559,6 @@ void worker_established(int task) {
 
     // partial write
     if (nwrote < nread) {
-        DTRACE("Partial write! Read %d\n Wrote %d\n", nread, nwrote);
         client->state = STATE_UNWRITTEN;
         client->index = 0;
 
