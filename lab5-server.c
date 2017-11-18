@@ -77,7 +77,7 @@ client_object *allocate_client();
 void free_client(client_object *client);
 
 // global variables
-client_object *fdmap[(MAX_NUM_CLIENTS * 2) + 6];
+client_object *fdmap[(MAX_NUM_CLIENTS * 2) + 7];
 int timer_map[(MAX_NUM_CLIENTS * 2) + 6];
 int sockfd; // listening socket
 int epfd; // epoll fd
