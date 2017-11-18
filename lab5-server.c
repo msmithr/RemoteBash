@@ -23,7 +23,7 @@
 
 #define PORT 4070
 #define SECRET "cs407rembash"
-#define MAX_NUM_CLIENTS 2 
+#define MAX_NUM_CLIENTS 100000
 #define TIMEOUT 5
 
 // type definitions
@@ -99,9 +99,13 @@ int main(int argc, char *argv[]) {
 
     DTRACE("Entering epoll_wait loop\n");
     DTRACE("--END INITIALIZATION--\n");
+
     // epoll_wait loop
     while (1) {
-        readyfd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS*2, -1);
+        if ((readyfd = epoll_wait(epfd, evlist, MAX_NUM_CLIENTS*2, -1)) == -1) {
+            DTRACE("Error on epoll_wait: %s\n", strerror(errno));
+            break;
+        }
         for (int i = 0; i < readyfd; i++) {
             // if event is an error, kill client
             if (evlist[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
@@ -480,7 +484,10 @@ void worker_function(int task) {
 
     // if the event is a timer
     if (task == timer_epfd) {
-        readyfd = epoll_wait(timer_epfd, evlist, MAX_NUM_CLIENTS, -1);
+        if ((readyfd = epoll_wait(timer_epfd, evlist, MAX_NUM_CLIENTS, -1)) == -1) {
+            DTRACE("Error on epoll_wait: %s\n", strerror(errno));
+            return;
+        }
         for (int i = 0; i < readyfd; i++) {
             client = fdmap[timer_map[evlist[i].data.fd]];
             DTRACE("Timer expired: %d\n", client->sockfd);
@@ -522,6 +529,7 @@ void worker_function(int task) {
             DTRACE("Error: Invalid client state\n");
             break;
     }
+
 } // end worker_function()
 
 void worker_established(int task) {
