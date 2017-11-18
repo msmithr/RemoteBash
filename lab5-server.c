@@ -14,7 +14,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <signal.h>
-#include <pthread.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
@@ -24,7 +23,7 @@
 
 #define PORT 4070
 #define SECRET "cs407rembash"
-#define MAX_NUM_CLIENTS 100
+#define MAX_NUM_CLIENTS 4 
 #define TIMEOUT 5
 
 // type definitions
@@ -54,6 +53,7 @@ typedef struct client_object {
     int sockfd;
     int index; // position in data buffer
     struct client_object *next; // pointer to next, for the linked list
+    int free; // flag to determine whether this object is free or allocated
     char data[4096]; // data to be written to sockfd
 } client_object;
 
@@ -84,8 +84,6 @@ int epfd; // epoll fd
 int timer_epfd; // timer epoll fd
 client_object slab[MAX_NUM_CLIENTS]; // slab allocation
 client_object *list_head = &slab[0];
-
-pthread_mutex_t mutex =  PTHREAD_MUTEX_INITIALIZER;
 
 int main(int argc, char *argv[]) {
     DTRACE("--INITIALIZATION--\n");
@@ -185,6 +183,7 @@ int setup() {
     // initialize the linked list
     for (int i = 0; i < MAX_NUM_CLIENTS-1; i++) {
         slab[i].next = &slab[i+1];
+        slab[i].free = 1;
     }
 
     DTRACE("Linked list of client memory initialized\n");
@@ -681,31 +680,31 @@ int pty_init(client_object *client) {
 
 // kill and clean up a client connection
 void cleanup_client(client_object *client) {
-    pthread_mutex_lock(&mutex);
-    if (client->state != STATE_TERMINATED) {
-        DTRACE("Cleaning up client: %d\n", client->sockfd);
-        DTRACE("Closing %d and %d\n", client->sockfd, client->ptyfd);
-        client->state = STATE_TERMINATED;
-        close(client->sockfd);
-        close(client->ptyfd);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, client->sockfd, NULL);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, client->ptyfd, NULL);
-        free_client(client);
-    }
-    pthread_mutex_unlock(&mutex);
+    DTRACE("Cleaning up client: %d\n", client->sockfd);
+    DTRACE("Closing %d and %d\n", client->sockfd, client->ptyfd);
+    client->state = STATE_TERMINATED;
+    close(client->sockfd);
+    close(client->ptyfd);
+    epoll_ctl(epfd, EPOLL_CTL_DEL, client->sockfd, NULL);
+    epoll_ctl(epfd, EPOLL_CTL_DEL, client->ptyfd, NULL);
+    free_client(client);
 } // end cleanup_client()
 
 // analogous to malloc()
 client_object *allocate_client() {
     client_object *result = list_head;
     list_head = list_head->next;
+    result->free = 0;
     return result;
 } // end allocate_client()
 
 // analogous to free()
 void free_client(client_object *client) {
-    client->next = list_head;
-    list_head = client;
+    if (!client->free) {
+        client->next = list_head;
+        list_head = client;
+        client->free = 1;
+    }
 } // end free_client()
 
 
