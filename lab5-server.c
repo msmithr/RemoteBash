@@ -597,8 +597,15 @@ void worker_established(int task) {
 
     if ((nwrote = write(tofd, buff, nread)) == -1) {
         if (errno == EAGAIN) {
+            // essentially a partial write of size 0
             errno = 0; // reset errno
-            epoll_add(epfd, task, RESET_EPOLLIN);
+            client->state = STATE_UNWRITTEN;
+            client->index = 0;
+            for (int i = 0; i < strlen(buff); i++) {
+                client->data[i] = buff[i];
+            }
+            client->data[strlen(buff)] = '\0';
+            epoll_add(epfd, client->sockfd, RESET_EPOLLOUT);
             return;
         } else {
             DTRACE("Failed to write to %d\n", tofd);
