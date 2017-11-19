@@ -163,6 +163,12 @@ int setup() {
         return -1;
     }
 
+    // set timer epoll to nonblock
+    if (fcntl(timer_epfd, F_SETFL, O_NONBLOCK) == -1) {
+        DTRACE("Error setting timer_epfd to nonblocking: %s\n", strerror(errno));
+        return -1;
+    }
+
     DTRACE("Timer epoll fd=%d created\n", timer_epfd);
 
     // add timer epoll to the epoll
