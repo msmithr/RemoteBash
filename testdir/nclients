@@ -1,5 +1,0 @@
-#!/bin/bash
-
-while true; do
-    urxvt -e ./rembash 127.0.0.1 &
-done
